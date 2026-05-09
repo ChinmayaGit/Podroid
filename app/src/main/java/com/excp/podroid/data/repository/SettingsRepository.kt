@@ -81,7 +81,12 @@ class SettingsRepository @Inject constructor(
 
     val darkTheme            = pref(KEY_DARK_THEME, true)
     val vmRamMb              = pref(KEY_VM_RAM, 512)
-    val vmCpus               = pref(KEY_VM_CPUS, 1)
+    // 2 vCPUs lets multi-threaded TCG (`thread=multi`) actually schedule
+    // across two host threads. With 1 vCPU the accel falls back to
+    // single-thread translation regardless of the flag, so most CPU-bound
+    // guest workloads (Node, npm install, Podman/Docker layer extraction)
+    // see a meaningful uplift just from this default change.
+    val vmCpus               = pref(KEY_VM_CPUS, 2)
     val terminalFontSize     = pref(KEY_FONT_SIZE, 20)
     val storageSizeGb        = pref(KEY_STORAGE_GB, 2)
     val storageAccessEnabled = pref(KEY_STORAGE_ACCESS_ENABLED, false)

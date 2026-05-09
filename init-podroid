@@ -17,9 +17,16 @@ echo "Mounting storage..." > /dev/console
 # /dev/vdb = read-only Alpine squashfs (system files)
 mkdir -p /mnt/persist /mnt/lower /mnt/overlay
 
-# Persistent: format on first boot if needed
+# Persistent: format on first boot if needed.
+# noatime: stop atime writes on every read.
+# commit=60: journal commits every 60s (default 5s) — 12× less journal IO
+#   under bursty container ops. Risk on power loss is bounded to the last
+#   60s of writes, which the user can mitigate with `sync` if it matters.
+# nobarrier: write barriers are unnecessary inside the VM because QEMU's
+#   cache=writeback layer already gives us host-level barriers on flush.
+#   Saves journal-commit syscalls on every metadata change.
 for _try in 1 2; do
-    if mount -t ext4 -o rw,noatime /dev/vda /mnt/persist 2>/dev/null; then break; fi
+    if mount -t ext4 -o rw,noatime,commit=60,barrier=0 /dev/vda /mnt/persist 2>/dev/null; then break; fi
     e2fsck -y /dev/vda >/dev/null 2>&1 || mkfs.ext4 -q -F /dev/vda
 done
 

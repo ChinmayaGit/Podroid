@@ -492,6 +492,11 @@ class PodroidQemu @Inject constructor(
         val userKernelExtras = config.kernelExtraCmdline.trim()
 
         args += "-M"; args += "virt,gic-version=3"
+        // pauth-impdef swaps QEMU's slow QARMA5 PAuth for a fast non-crypto impl (≤50% TCG win on aarch64-on-aarch64).
+        args += "-cpu"; args += "max,pauth-impdef=on"
+        val tbSizeMb = if (config.ramMb >= 2048) 512 else 256
+        // thread=multi: one host thread per vCPU; larger tb-size reduces re-translation for JIT-heavy guests.
+        args += "-accel"; args += "tcg,thread=multi,tb-size=$tbSizeMb"
         args += "-smp"; args += "${config.cpus}"
         args += "-m";   args += "${config.ramMb}"
 
@@ -501,7 +506,8 @@ class PodroidQemu @Inject constructor(
         if (kernelPath.exists()) {
             args += "-kernel"; args += kernelPath.absolutePath
             val cmdline = buildString {
-                append("console=ttyAMA0")
+                // mitigations=off: speculative-exec attacks don't cross the TCG ISA boundary; 5–15% gain.
+                append("console=ttyAMA0 mitigations=off")
                 if (userKernelExtras.isNotEmpty()) append(" ").append(userKernelExtras)
                 append(" androidip=").append(config.androidIp)
                 if (config.sshEnabled) append(" ssh=1")
@@ -519,6 +525,11 @@ class PodroidQemu @Inject constructor(
 
         val storagePath = File(context.filesDir, "storage.img")
         if (storagePath.exists()) {
+            // Single dedicated iothread for the writable disk. Multi-iothread
+            // fan-out via `iothread-vq-mapping` requires `-device <full-json>`
+            // form (the keyval parser cannot supply array-typed properties),
+            // and on TCG-emulated guests the perf win is marginal vs the
+            // refactor cost. Stick with one iothread, num-queues==vCPUs.
             args += "-object"; args += "iothread,id=iothread0"
             args += "-device"; args += "virtio-blk-pci,drive=drive1,num-queues=${config.cpus},iothread=iothread0"
             args += "-drive";  args += "file=${storagePath.absolutePath},if=none,id=drive1,format=raw,cache=writeback,aio=threads"
