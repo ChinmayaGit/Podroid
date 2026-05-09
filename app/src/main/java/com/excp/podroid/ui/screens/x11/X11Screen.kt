@@ -14,9 +14,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -33,15 +38,41 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.excp.podroid.x11.X11Constants
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
+// X11 keysyms for keys that don't appear as printable characters in
+// onValueChange diffs. ASCII keys (0x20–0x7E) double as their own keysyms.
+private const val XK_BackSpace = 0xFF08
+private const val XK_Tab       = 0xFF09
+private const val XK_Return    = 0xFF0D
+private const val XK_Escape    = 0xFF1B
+private const val XK_Left      = 0xFF51
+private const val XK_Up        = 0xFF52
+private const val XK_Right     = 0xFF53
+private const val XK_Down      = 0xFF54
+
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalComposeUiApi::class,
+    androidx.compose.ui.ExperimentalComposeUiApi::class,
+)
 @Composable
 fun X11Screen(
     onNavigateBack: () -> Unit,
@@ -57,11 +88,33 @@ fun X11Screen(
         Bitmap.createBitmap(X11Constants.FB_WIDTH, X11Constants.FB_HEIGHT, Bitmap.Config.ARGB_8888)
     }
 
-    // SurfaceView size — captured in surfaceChanged so the touch-coord scaler
-    // uses the real on-screen pixel size of the view, not a MotionEvent device
-    // axis range (which doesn't necessarily match the view bounds).
-    var svWidth by remember { mutableStateOf(1) }
+    // SurfaceView size in pixels — captured in surfaceChanged.
+    var svWidth  by remember { mutableStateOf(1) }
     var svHeight by remember { mutableStateOf(1) }
+
+    // Letterbox / pillarbox destination rect inside the SurfaceView, recomputed
+    // whenever the view size changes. Touch handler uses this to map screen
+    // coords back into the framebuffer's 1280x720 space, so taps on the black
+    // bars don't generate phantom mouse events.
+    val (dstX, dstY, dstW, dstH) = remember(svWidth, svHeight) {
+        val fbW = X11Constants.FB_WIDTH.toFloat()
+        val fbH = X11Constants.FB_HEIGHT.toFloat()
+        val viewW = svWidth.toFloat().coerceAtLeast(1f)
+        val viewH = svHeight.toFloat().coerceAtLeast(1f)
+        val scale = minOf(viewW / fbW, viewH / fbH)
+        val dW = (fbW * scale).toInt().coerceAtLeast(1)
+        val dH = (fbH * scale).toInt().coerceAtLeast(1)
+        val dX = ((viewW - dW) / 2f).toInt()
+        val dY = ((viewH - dH) / 2f).toInt()
+        IntArray4(dX, dY, dW, dH)
+    }
+
+    // Hidden text field for soft-keyboard input. We give it focus when the
+    // keyboard icon is tapped; the IME shows; typed characters arrive via
+    // onValueChange and are forwarded to the VM as X11 KeyPress/KeyRelease.
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var imeBuf by remember { mutableStateOf(TextFieldValue("")) }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
@@ -72,6 +125,12 @@ fun X11Screen(
                 }
             },
             actions = {
+                IconButton(onClick = {
+                    focusRequester.requestFocus()
+                    keyboardController?.show()
+                }) {
+                    Icon(Icons.Default.Keyboard, contentDescription = "Keyboard")
+                }
                 IconButton(onClick = onNavigateToTerminal) {
                     Icon(
                         Icons.Default.DesktopWindows,
@@ -104,12 +163,17 @@ fun X11Screen(
                         modifier = Modifier
                             .fillMaxSize()
                             .pointerInteropFilter { ev ->
-                                val sx = (ev.x / svWidth.coerceAtLeast(1).toFloat() *
-                                    X11Constants.FB_WIDTH).toInt()
-                                    .coerceIn(0, X11Constants.FB_WIDTH - 1)
-                                val sy = (ev.y / svHeight.coerceAtLeast(1).toFloat() *
-                                    X11Constants.FB_HEIGHT).toInt()
-                                    .coerceIn(0, X11Constants.FB_HEIGHT - 1)
+                                // Map raw touch (in SurfaceView space) into the
+                                // letterboxed destination rect, then into the
+                                // 1280x720 framebuffer. Taps in the black bars
+                                // become coords clamped to the FB edge — feels
+                                // OK in practice (mouse moves to nearest edge).
+                                val w = dstW.coerceAtLeast(1)
+                                val h = dstH.coerceAtLeast(1)
+                                val sx = ((ev.x - dstX) / w * X11Constants.FB_WIDTH)
+                                    .toInt().coerceIn(0, X11Constants.FB_WIDTH - 1)
+                                val sy = ((ev.y - dstY) / h * X11Constants.FB_HEIGHT)
+                                    .toInt().coerceIn(0, X11Constants.FB_HEIGHT - 1)
                                 val mask = when (ev.actionMasked) {
                                     MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> 1
                                     else -> 0
@@ -142,15 +206,84 @@ fun X11Screen(
                             val holder = sv.holder
                             val canvas = holder.lockCanvas() ?: return@AndroidView
                             try {
-                                val dst = Rect(0, 0, sv.width, sv.height)
+                                canvas.drawColor(android.graphics.Color.BLACK)
+                                val dst = Rect(dstX, dstY, dstX + dstW, dstY + dstH)
                                 canvas.drawBitmap(bitmap, null, dst, null)
                             } finally {
                                 holder.unlockCanvasAndPost(canvas)
                             }
                         },
                     )
+
+                    // Off-screen IME hook. 1.dp + alpha 0 keeps it invisible
+                    // but still focusable so the soft keyboard targets it.
+                    BasicTextField(
+                        value = imeBuf,
+                        onValueChange = { new ->
+                            forwardImeDiff(imeBuf.text, new.text, viewModel)
+                            // Reset to empty so the buffer doesn't grow.
+                            imeBuf = TextFieldValue("")
+                        },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                viewModel.sendKey(XK_Return, down = true)
+                                viewModel.sendKey(XK_Return, down = false)
+                            },
+                        ),
+                        modifier = Modifier
+                            .size(1.dp)
+                            .alpha(0f)
+                            .focusRequester(focusRequester)
+                            .onPreviewKeyEvent { ev ->
+                                // Hardware-key intercept for special keys the
+                                // soft keyboard sends as KeyEvents (arrows,
+                                // backspace on some IMEs, escape, tab).
+                                if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                val keysym = when (ev.key) {
+                                    Key.Backspace  -> XK_BackSpace
+                                    Key.Enter,
+                                    Key.NumPadEnter -> XK_Return
+                                    Key.Tab        -> XK_Tab
+                                    Key.Escape     -> XK_Escape
+                                    Key.DirectionLeft  -> XK_Left
+                                    Key.DirectionRight -> XK_Right
+                                    Key.DirectionUp    -> XK_Up
+                                    Key.DirectionDown  -> XK_Down
+                                    else -> return@onPreviewKeyEvent false
+                                }
+                                viewModel.sendKey(keysym, down = true)
+                                viewModel.sendKey(keysym, down = false)
+                                true
+                            },
+                    )
                 }
             }
         }
     }
 }
+
+/**
+ * Compares old vs new IME buffer content, fires synthetic X11 key events
+ * for the diff. Printable characters use their ASCII code as the keysym
+ * (X11 keysyms 0x20–0x7E match ASCII verbatim).
+ */
+private fun forwardImeDiff(old: String, new: String, vm: X11ViewModel) {
+    if (new.length > old.length) {
+        // Inserted text — send each char as keysym = code.
+        new.substring(old.length).forEach { ch ->
+            val keysym = ch.code
+            vm.sendKey(keysym, down = true)
+            vm.sendKey(keysym, down = false)
+        }
+    } else if (new.length < old.length) {
+        // Soft delete — fire that many backspaces.
+        repeat(old.length - new.length) {
+            vm.sendKey(XK_BackSpace, down = true)
+            vm.sendKey(XK_BackSpace, down = false)
+        }
+    }
+}
+
+// Tiny helper so the dst rect destructure reads cleanly.
+private data class IntArray4(val a: Int, val b: Int, val c: Int, val d: Int)
