@@ -129,6 +129,11 @@ object VncClient {
         din.skipBytes(1)
         val numRects = din.readUnsignedShort()
 
+        // Reused row scratch — only reallocated when a wider rect arrives.
+        // Without this, a 1280x720 frame at 60 fps allocates 720 ByteArrays
+        // per refresh (~300 KB/s GC pressure).
+        var rowBuf: ByteArray? = null
+
         repeat(numRects) {
             val x = din.readUnsignedShort()
             val y = din.readUnsignedShort()
@@ -139,9 +144,15 @@ object VncClient {
             when (enc) {
                 ENC_RAW -> {
                     // 4 bytes BGRA per pixel.
-                    val rowPixels = ByteArray(w * 4)
+                    val needed = w * 4
+                    val existing = rowBuf
+                    val rowPixels = if (existing == null || existing.size < needed) {
+                        ByteArray(needed).also { rowBuf = it }
+                    } else {
+                        existing
+                    }
                     for (row in 0 until h) {
-                        din.readFully(rowPixels)
+                        din.readFully(rowPixels, 0, needed)
                         var off = 0
                         val baseIdx = (y + row) * stride + x
                         for (col in 0 until w) {

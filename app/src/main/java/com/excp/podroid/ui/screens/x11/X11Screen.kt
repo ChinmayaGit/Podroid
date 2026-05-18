@@ -278,12 +278,18 @@ fun X11Screen(
                     update = { sv ->
                         @Suppress("UNUSED_EXPRESSION")
                         frameCount
-                        bitmap.setPixels(
-                            viewModel.framebuffer, 0,
-                            X11Constants.FB_WIDTH,
-                            0, 0,
-                            X11Constants.FB_WIDTH, X11Constants.FB_HEIGHT,
-                        )
+                        // Lock the IntArray for the copy into Bitmap pixels so
+                        // we never observe a half-written frame from the RFB
+                        // decoder thread (paired with synchronized(framebuffer)
+                        // in X11ViewModel.connect).
+                        synchronized(viewModel.framebuffer) {
+                            bitmap.setPixels(
+                                viewModel.framebuffer, 0,
+                                X11Constants.FB_WIDTH,
+                                0, 0,
+                                X11Constants.FB_WIDTH, X11Constants.FB_HEIGHT,
+                            )
+                        }
                         val holder = sv.holder
                         val canvas = holder.lockCanvas() ?: return@AndroidView
                         try {

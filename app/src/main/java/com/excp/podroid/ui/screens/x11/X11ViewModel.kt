@@ -41,7 +41,14 @@ class X11ViewModel @Inject constructor(
     private val _connection = MutableStateFlow<X11ConnectionState>(X11ConnectionState.Disconnected)
     val connection: StateFlow<X11ConnectionState> = _connection.asStateFlow()
 
-    /** Backing pixel buffer the SurfaceView blits to a Bitmap. */
+    /**
+     * Backing pixel buffer the SurfaceView blits to a Bitmap.
+     *
+     * Threading: written by the RFB I/O coroutine in [connect] and read by the
+     * UI thread in `X11Screen.update`. Both sides MUST `synchronized(framebuffer)`
+     * around the read/write to avoid torn pixels (one frame mid-write being
+     * blitted, producing transient horizontal tearing visible as banding).
+     */
     val framebuffer: IntArray = IntArray(X11Constants.FB_WIDTH * X11Constants.FB_HEIGHT)
 
     private val _frameCounter = MutableStateFlow(0)
@@ -70,11 +77,17 @@ class X11ViewModel @Inject constructor(
                     audio.start(viewModelScope)
 
                     while (isActive) {
-                        VncClient.readFramebufferUpdate(
-                            inp = inp,
-                            targetArgb = framebuffer,
-                            stride = X11Constants.FB_WIDTH,
-                        )
+                        // Lock the framebuffer for the full RFB rect decode so the
+                        // UI thread can't observe a half-written frame. The lock
+                        // is uncontended ~99% of the time (UI grabs it only during
+                        // setPixels, which is fast).
+                        synchronized(framebuffer) {
+                            VncClient.readFramebufferUpdate(
+                                inp = inp,
+                                targetArgb = framebuffer,
+                                stride = X11Constants.FB_WIDTH,
+                            )
+                        }
                         _frameCounter.value = _frameCounter.value + 1
                         VncClient.requestFramebufferUpdate(out, incremental = true)
                     }

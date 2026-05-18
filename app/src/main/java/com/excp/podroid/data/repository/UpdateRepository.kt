@@ -1,6 +1,7 @@
 package com.excp.podroid.data.repository
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -28,7 +29,9 @@ class UpdateRepository @Inject constructor(
 
     suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val now = System.currentTimeMillis()
+            // Monotonic clock — immune to NTP jumps and manual user clock changes,
+            // both of which can leave the cache effectively pinned or instantly stale.
+            val now = SystemClock.uptimeMillis()
             val lastCheck = context.dataStore.data.first()[lastCheckKey] ?: 0L
 
             if (now - lastCheck < cacheValidityMs) {

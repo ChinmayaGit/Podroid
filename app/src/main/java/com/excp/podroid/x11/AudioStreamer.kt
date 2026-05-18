@@ -73,7 +73,13 @@ class AudioStreamer(private val host: String = "127.0.0.1") {
             X11Constants.AUDIO_SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT,
-        ).coerceAtLeast(BUF_BYTES * 4)
+        )
+        // Target ~100 ms — 4410 frames @ 44.1 kHz * 2 channels * 2 bytes/sample
+        // ≈ 17.6 KB. Floor at minBuf so AudioTrack never refuses to build.
+        // Previously we used minBuf * 4 which gave ~170 ms one-way latency —
+        // audible lag on click feedback in X11.
+        val targetBuf = (X11Constants.AUDIO_SAMPLE_RATE / 10 *
+            X11Constants.AUDIO_CHANNELS * 2).coerceAtLeast(minBuf)
 
         return AudioTrack.Builder()
             .setAudioAttributes(
@@ -89,7 +95,7 @@ class AudioStreamer(private val host: String = "127.0.0.1") {
                     .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                     .build()
             )
-            .setBufferSizeInBytes(minBuf)
+            .setBufferSizeInBytes(targetBuf)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
             .also { it.setVolume(1.0f) }
