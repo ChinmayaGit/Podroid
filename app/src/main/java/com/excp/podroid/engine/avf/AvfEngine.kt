@@ -478,6 +478,29 @@ class AvfEngine @Inject constructor(
         )
         AvfReflect.addDisk(cb, storage.absolutePath, writable = true)
         AvfReflect.addDisk(cb, squashfs.absolutePath, writable = false)
+        if (config.storageAccessEnabled) {
+            val downloads = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            ).absolutePath
+            runCatching {
+                // hostUid/hostGid are this app's UID — AVF requires per-user
+                // identity even though we share a single uid/gid for app procs.
+                // guestUid=1000 (Alpine root, who runs the mount), gid=100
+                // (users), mask 0007 = group-readable, world-blocked.
+                AvfReflect.addSharedPath(
+                    customBuilder = cb,
+                    sharedPath = downloads,
+                    tag = "downloads",
+                    hostUid = android.os.Process.myUid(),
+                    hostGid = android.os.Process.myUid(),
+                    guestUid = 1000,
+                    guestGid = 100,
+                    mask = 0x0007,
+                    socketPath = "${context.filesDir.absolutePath}/avf-virtfs-downloads.sock",
+                )
+                Log.i(TAG, "downloads share added: $downloads")
+            }.onFailure { Log.w(TAG, "addSharedPath failed (continuing without share)", it) }
+        }
         AvfReflect.setNetworkSupported(cb, true)
         val customCfg = AvfReflect.build(cb)
 

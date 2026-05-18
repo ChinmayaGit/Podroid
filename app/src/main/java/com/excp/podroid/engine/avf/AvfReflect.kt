@@ -145,6 +145,47 @@ object AvfReflect {
         addM.invoke(b, disk)
     }
 
+    /**
+     * Add a host-filesystem path that the guest can mount via virtio-9p
+     * (`mount -t 9p downloads /mnt/downloads ...`). The `tag` parameter matches
+     * what the guest passes as the mount source.
+     *
+     * SharedPath constructor signature (from dexdump on the Pixel framework jar):
+     *   (String sharedPath, String socket, int hostUid, int hostGid,
+     *    int guestUid, int guestGid, int mask, String tag, String socketPath)
+     *
+     * `socket` (the abstract-socket name) is empty because we use a
+     * filesystem socket via `socketPath`.
+     */
+    fun addSharedPath(
+        customBuilder: Any,
+        sharedPath: String,
+        tag: String,
+        hostUid: Int,
+        hostGid: Int,
+        guestUid: Int,
+        guestGid: Int,
+        mask: Int,
+        socketPath: String,
+    ) {
+        val spCls = Class.forName("$PKG.VirtualMachineCustomImageConfig\$SharedPath")
+        val spCtor = spCls.getDeclaredConstructor(
+            String::class.java, String::class.java,
+            Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!,
+            Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!,
+            Int::class.javaPrimitiveType!!,
+            String::class.java, String::class.java,
+        ).apply { isAccessible = true }
+        val sp = spCtor.newInstance(
+            sharedPath, /* socket = */ "",
+            hostUid, hostGid, guestUid, guestGid, mask,
+            tag, socketPath,
+        )
+        val addM = customBuilder.javaClass.getDeclaredMethod("addSharedPath", spCls)
+            .apply { isAccessible = true }
+        addM.invoke(customBuilder, sp)
+    }
+
     fun setNetworkSupported(b: Any, value: Boolean) {
         val ok = runCatching { invokeDecl(b, "useNetwork", Boolean::class.javaPrimitiveType!! to value) }.isSuccess
             || runCatching { invokeDecl(b, "setNetworkSupported", Boolean::class.javaPrimitiveType!! to value) }.isSuccess
