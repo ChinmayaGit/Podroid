@@ -25,10 +25,10 @@ mkdir -p /mnt/persist /mnt/lower /mnt/overlay
 # nobarrier: write barriers are unnecessary inside the VM because QEMU's
 #   cache=writeback layer already gives us host-level barriers on flush.
 #   Saves journal-commit syscalls on every metadata change.
-for _try in 1 2; do
-    if mount -t ext4 -o rw,noatime,commit=60,barrier=0 /dev/vda /mnt/persist 2>/dev/null; then break; fi
+if ! mount -t ext4 -o rw,noatime,commit=60,barrier=0 /dev/vda /mnt/persist 2>/dev/null; then
     e2fsck -y /dev/vda >/dev/null 2>&1 || mkfs.ext4 -q -F /dev/vda
-done
+    mount -t ext4 -o rw,noatime,commit=60,barrier=0 /dev/vda /mnt/persist
+fi
 
 mount -t squashfs -o ro /dev/vdb /mnt/lower
 

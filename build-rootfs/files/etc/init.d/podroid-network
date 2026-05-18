@@ -12,11 +12,11 @@ start() {
     echo "Configuring containers..." > /dev/console
     ip link set lo up 2>/dev/null
     NETIF=""
-    for _i in $(seq 1 150); do
+    for _i in $(seq 1 10); do
         NETIF=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | \
             grep -vE '^(lo|dummy[0-9]*|veth|podman|cni-|docker)' | head -1)
         [ -n "$NETIF" ] && break
-        sleep 0.2
+        sleep 0.05
     done
     if [ -n "$NETIF" ]; then
         ip link set "$NETIF" up

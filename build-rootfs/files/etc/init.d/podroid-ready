@@ -10,9 +10,7 @@ start() {
     # By the time we run, dropbear has started (we depend on it).
     # Emit the boot stages PodroidQemu.detectBootStage() expects.
     echo "Starting SSH..." > /dev/console
-    sleep 0.2
     echo "Almost ready..." > /dev/console
-    sleep 0.3
     echo "Ready!" > /dev/console
     return 0
 }
