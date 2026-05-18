@@ -41,10 +41,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,6 +74,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.excp.podroid.ui.components.PodroidTopBar
 import com.excp.podroid.x11.X11Constants
 import kotlinx.coroutines.delay
 
@@ -142,8 +143,8 @@ fun X11Screen(
         Bitmap.createBitmap(X11Constants.FB_WIDTH, X11Constants.FB_HEIGHT, Bitmap.Config.ARGB_8888)
     }
 
-    var svWidth  by remember { mutableStateOf(1) }
-    var svHeight by remember { mutableStateOf(1) }
+    var svWidth  by remember { mutableIntStateOf(1) }
+    var svHeight by remember { mutableIntStateOf(1) }
 
     // Letterbox / pillarbox dst rect, pinned to top so the soft keyboard
     // (and the extra-keys row) live in the empty bottom strip.
@@ -199,8 +200,8 @@ fun X11Screen(
             // keyboard, AndroidView (weight=1) shrinks to fill the gap.
             .windowInsetsPadding(WindowInsets.ime)
     ) {
-        TopAppBar(
-            title = { Text("X11") },
+        PodroidTopBar(
+            title = "X11",
             navigationIcon = {
                 IconButton(onClick = onNavigateBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
