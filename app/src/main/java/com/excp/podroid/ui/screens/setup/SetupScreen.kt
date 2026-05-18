@@ -1,7 +1,6 @@
 package com.excp.podroid.ui.screens.setup
 
 import android.Manifest
-import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -20,12 +19,10 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -33,24 +30,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.windowsizeclass.WindowHeightSizeClass
@@ -67,11 +50,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.excp.podroid.ui.components.AdaptiveContainer
+import com.excp.podroid.ui.components.PodroidGhostButton
+import com.excp.podroid.ui.components.PodroidListRow
+import com.excp.podroid.ui.components.PodroidPrimaryButton
+import com.excp.podroid.ui.components.PodroidSectionLabel
+import com.excp.podroid.ui.components.PodroidSwitch
+import com.excp.podroid.ui.components.podroidChipColors
+import com.excp.podroid.ui.theme.PodroidTokens
 import kotlinx.coroutines.launch
 
 private val storageSizes = listOf(2, 4, 8, 16, 32, 64)
@@ -160,12 +149,14 @@ fun SetupScreen(
                             }
                         },
                         onOpenStorageAccessSettings = {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                        Uri.parse("package:${context.packageName}"),
+                                    )
                                 )
-                            )
+                            }
                         },
                         onBack = { scope.launch { pagerState.animateScrollToPage(1) } },
                         onGetStarted = {
@@ -212,116 +203,84 @@ fun SetupScreen(
     }
 }
 
-// ── Setup page scaffold (handles landscape vs portrait, hero vs side-by-side) ──
+// ── Setup page scaffold ───────────────────────────────────────────────────────
 
 @Composable
 private fun SetupPageLayout(
     windowSizeClass: WindowSizeClass,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    stepLabel: String,
     title: String,
     description: String,
     bottomBar: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    // Compact height = landscape phone or split-screen — go side-by-side so the
+    // hero (step label + title + description) doesn't push the chips off-screen.
     val isCompactHeight = windowSizeClass.heightSizeClass == WindowHeightSizeClass.Compact
-    val maxCardWidth = if (isCompactHeight) 920 else 600
-
     AdaptiveContainer(
         windowSizeClass = windowSizeClass,
         modifier = Modifier.fillMaxSize(),
-        maxWidth = maxCardWidth,
+        maxWidth = if (isCompactHeight) 920 else 600,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = PodroidTokens.Spacing.XL),
         ) {
-            ElevatedCard(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            ) {
-                if (isCompactHeight) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 24.dp, vertical = 16.dp),
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        // Hero column (icon + title + description)
-                        Column(
-                            modifier = Modifier.weight(1f).padding(top = 20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center,
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                text = description,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                        Spacer(Modifier.width(24.dp))
-                        // Content column (top-aligned; outer scroll handles overflow)
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            content()
-                        }
-                    }
-                } else {
+            if (isCompactHeight) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                ) {
                     Column(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                            .weight(1f)
+                            .padding(top = PodroidTokens.Spacing.XL, end = PodroidTokens.Spacing.XL),
                     ) {
-                        Spacer(Modifier.height(40.dp))
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(Modifier.height(20.dp))
+                        PodroidSectionLabel(stepLabel)
                         Text(
                             text = title,
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.displayLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(PodroidTokens.Spacing.SM))
                         Text(
                             text = description,
-                            style = MaterialTheme.typography.bodyLarge,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
                         )
-                        Spacer(Modifier.height(32.dp))
-                        content()
-                        Spacer(Modifier.height(16.dp))
                     }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = PodroidTokens.Spacing.XL),
+                    ) {
+                        content()
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Spacer(Modifier.height(PodroidTokens.Spacing.XL))
+                    PodroidSectionLabel(stepLabel)
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.displayLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(PodroidTokens.Spacing.SM))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(PodroidTokens.Spacing.XL))
+                    content()
+                    Spacer(Modifier.height(PodroidTokens.Spacing.XL))
                 }
             }
             bottomBar()
@@ -338,24 +297,20 @@ private fun StoragePage(
     onSelect: (Int) -> Unit,
     onNext: () -> Unit,
 ) {
-    val isCompact = windowSizeClass.heightSizeClass == WindowHeightSizeClass.Compact
     SetupPageLayout(
         windowSizeClass = windowSizeClass,
-        icon = Icons.Default.Storage,
-        title = "Persistent Storage",
-        description = "Stores installed packages, container images, and your files.",
-        bottomBar = { SetupNextBar(onNext = onNext) },
+        stepLabel  = "Step 1 of 3",
+        title      = "Persistent Storage",
+        description = "Storage for installed packages, container images, and your files. Cannot be resized later without resetting the VM.",
+        bottomBar  = { SetupNextBar(onNext = onNext) },
     ) {
         Text(
             text = "$selectedGb GB",
-            style = if (isCompact) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.displayMedium,
-            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.displayLarge,
             color = MaterialTheme.colorScheme.primary,
         )
-        Spacer(Modifier.height(if (isCompact) 8.dp else 12.dp))
+        Spacer(Modifier.height(PodroidTokens.Spacing.MD))
         StorageSizeChips(selectedGb, onSelect)
-        Spacer(Modifier.height(if (isCompact) 12.dp else 16.dp))
-        StorageInfoCard()
     }
 }
 
@@ -371,80 +326,34 @@ private fun VmConfigPage(
 ) {
     SetupPageLayout(
         windowSizeClass = windowSizeClass,
-        icon = Icons.Default.Memory,
-        title = "Configure Your VM",
-        description = "Defaults are tuned for the best balance of performance and battery. Adjust anytime in Settings.",
-        bottomBar = { SetupNavBar(onBack = onBack, onNext = onNext, nextLabel = "Next") },
+        stepLabel  = "Step 2 of 3",
+        title      = "Configure your VM",
+        description = "Defaults tuned for performance and battery. Change anytime in Settings.",
+        bottomBar  = { SetupNavBar(onBack = onBack, onNext = onNext, nextLabel = "Continue") },
     ) {
-        // Performance defaults
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text(
-                    "Default Performance",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(12.dp))
-                SetupInfoRow(label = "CPU", value = "2 cores")
-                Spacer(Modifier.height(6.dp))
-                SetupInfoRow(label = "RAM", value = "512 MB")
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        // SSH toggle
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (sshEnabled)
-                    MaterialTheme.colorScheme.primaryContainer
-                else
-                    MaterialTheme.colorScheme.surfaceVariant,
-            ),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Default.Security,
-                    contentDescription = null,
-                    tint = if (sshEnabled)
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp),
-                )
-                Spacer(Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "SSH Access",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        if (sshEnabled)
-                            "ssh root@<phone-ip> -p 9922\nPassword: podroid"
-                        else
-                            "Connect to the VM over your local network.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (sshEnabled)
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        else
-                            MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Switch(checked = sshEnabled, onCheckedChange = onSshToggle)
-            }
+        PodroidSectionLabel("Resources")
+        PodroidListRow(label = "CPU cores", value = "2")
+        PodroidListRow(label = "RAM",       value = "512 MB")
+
+        PodroidSectionLabel("Network")
+        PodroidListRow(
+            label = "SSH access",
+            rightSlot = { PodroidSwitch(checked = sshEnabled, onCheckedChange = onSshToggle) },
+            divider = false,
+        )
+        if (sshEnabled) {
+            Spacer(Modifier.height(PodroidTokens.Spacing.XS))
+            Text(
+                text = "ssh root@<phone-ip> -p 9922   (password: podroid)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = PodroidTokens.mono(),
+            )
         }
     }
 }
+
+// ── Page 3: Storage access ────────────────────────────────────────────────────
 
 @Composable
 private fun StorageAccessPage(
@@ -460,66 +369,34 @@ private fun StorageAccessPage(
 
     SetupPageLayout(
         windowSizeClass = windowSizeClass,
-        icon = Icons.Default.Security,
-        title = "Downloads Sharing",
-        description = "Optional access to your Downloads folder inside the VM.",
-        bottomBar = { SetupNavBar(onBack = onBack, onNext = onGetStarted, nextLabel = "Get Started", showNextIcon = false) },
+        stepLabel  = "Step 3 of 3",
+        title      = "Downloads Sharing",
+        description = "Optional. Mount your Android Downloads folder into the VM over virtio-9p.",
+        bottomBar  = { SetupNavBar(onBack = onBack, onNext = onGetStarted, nextLabel = "Get Started") },
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Enable Downloads sharing",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "Shares the Android Downloads folder with the VM over virtio-9p.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Switch(
-                        checked = storageAccessEnabled,
-                        onCheckedChange = onStorageAccessToggle,
-                    )
-                }
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "On some devices this may crash the VM.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (storageAccessEnabled && canManageAllFiles && !hasStoragePermission) {
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = onOpenStorageAccessSettings,
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Text("Grant storage access")
-                    }
-                } else if (storageAccessEnabled && canManageAllFiles) {
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = if (hasStoragePermission) "All files access granted." else "All files access not granted.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+        PodroidSectionLabel("Sharing")
+        PodroidListRow(
+            label = "Enable Downloads sharing",
+            rightSlot = { PodroidSwitch(checked = storageAccessEnabled, onCheckedChange = onStorageAccessToggle) },
+        )
+        if (!canManageAllFiles) {
+            Spacer(Modifier.height(PodroidTokens.Spacing.SM))
+            Text(
+                text = "Requires Android 11+. On this device the toggle is for future-OS upgrades only.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+        if (storageAccessEnabled && canManageAllFiles && !hasStoragePermission) {
+            Spacer(Modifier.height(PodroidTokens.Spacing.LG))
+            PodroidPrimaryButton(text = "Grant storage access", onClick = onOpenStorageAccessSettings)
+        }
+        Spacer(Modifier.height(PodroidTokens.Spacing.LG))
+        Text(
+            text = "Warning: on some devices this can crash the VM. Disable it if start fails.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = PodroidTokens.Amber,
+        )
     }
 }
 
@@ -527,18 +404,8 @@ private fun StorageAccessPage(
 
 @Composable
 private fun SetupNextBar(onNext: () -> Unit) {
-    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)) {
-        Button(
-            onClick = onNext,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            Text("Next", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.width(8.dp))
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
-        }
+    Column(modifier = Modifier.padding(vertical = PodroidTokens.Spacing.LG)) {
+        PodroidPrimaryButton(text = "Continue", onClick = onNext)
     }
 }
 
@@ -547,53 +414,15 @@ private fun SetupNavBar(
     onBack: () -> Unit,
     onNext: () -> Unit,
     nextLabel: String,
-    showNextIcon: Boolean = true,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = PodroidTokens.Spacing.LG),
+        horizontalArrangement = Arrangement.spacedBy(PodroidTokens.Spacing.SM),
     ) {
-        FilledTonalButton(
-            onClick = onBack,
-            modifier = Modifier.weight(1f).height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Back", style = MaterialTheme.typography.titleMedium)
-        }
-        Button(
-            onClick = onNext,
-            modifier = Modifier.weight(2f).height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            Text(nextLabel, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            if (showNextIcon) {
-                Spacer(Modifier.width(8.dp))
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SetupInfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        PodroidGhostButton(text = "Back", onClick = onBack, modifier = Modifier.weight(1f))
+        PodroidPrimaryButton(text = nextLabel, onClick = onNext, modifier = Modifier.weight(2f))
     }
 }
 
@@ -604,6 +433,7 @@ private fun StorageSizeChips(selectedGb: Int, onSelect: (Int) -> Unit) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalArrangement = Arrangement.spacedBy(8.dp),
+        maxItemsInEachRow = 3,
     ) {
         storageSizes.forEach { gb ->
             FilterChip(
@@ -617,39 +447,7 @@ private fun StorageSizeChips(selectedGb: Int, onSelect: (Int) -> Unit) {
                     )
                 },
                 shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ),
-            )
-        }
-    }
-}
-
-@Composable
-private fun StorageInfoCard() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-        ),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Default.Info,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = "Cannot be resized later without a full VM reset.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                colors = podroidChipColors(),
             )
         }
     }
