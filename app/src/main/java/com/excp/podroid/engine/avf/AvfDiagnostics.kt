@@ -156,6 +156,13 @@ object AvfDiagnostics {
         if (!kernel.exists()) return "FAILED: kernel not extracted yet at ${kernel.absolutePath}"
         if (!initrd.exists()) return "FAILED: initrd not extracted yet at ${initrd.absolutePath}"
 
+        if (AvfCapabilities.choose(pre.capabilitiesRaw) is AvfCapabilities.ProtectedVmChoice.Unsupported) {
+            return "not applicable on this device: the hypervisor only supports protected VMs " +
+                "(caps=${pre.capabilitiesDecoded}), and Podroid's custom Linux kernel can run only as a " +
+                "non-protected VM. This is expected, not a failure: Podroid automatically uses the QEMU " +
+                "backend here."
+        }
+
         return try {
             val vmm = getVirtualizationManager(context)
                 ?: return "FAILED: VirtualMachineManager system service returned null"
@@ -185,7 +192,17 @@ object AvfDiagnostics {
             "SUCCESS: AVF accepted our config, VM started + stopped cleanly. The dev-grant path works on this device."
         } catch (e: Throwable) {
             val cause = e.cause ?: e
-            "FAILED: ${cause.javaClass.simpleName}: ${cause.message}"
+            if (cause is UnsupportedOperationException &&
+                cause.message?.contains("protected", ignoreCase = true) == true) {
+                // Device is protected-only but getCapabilities() reported 0, so the
+                // framework rejected our non-protected VM at build/run instead. Same
+                // expected outcome as the early check above, not a failure.
+                "not applicable on this device: AVF rejected a non-protected VM " +
+                    "(${cause.message}). Podroid's custom Linux kernel can run only as a non-protected " +
+                    "VM. This is expected, not a failure: Podroid automatically uses the QEMU backend here."
+            } else {
+                "FAILED: ${cause.javaClass.simpleName}: ${cause.message}"
+            }
         }
     }
 
