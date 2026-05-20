@@ -43,6 +43,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -87,6 +88,19 @@ class QemuEngine @Inject constructor(
     override val qmpClient: QmpClient? by lazy { QmpClient(qmpSocketPath) }
 
     private var ioScope: CoroutineScope? = null
+
+    /**
+     * Single dedicated thread that BOTH fork/exec's QEMU and blocks in
+     * waitFor(). libpodroid-launcher sets PR_SET_PDEATHSIG(SIGKILL), which is
+     * THREAD-scoped: the kernel SIGKILLs QEMU when the thread that spawned it
+     * dies — not when the app process dies. Forking from a Dispatchers.IO pool
+     * thread let that thread be recycled (~60s idle keep-alive) once the start()
+     * coroutine migrated off it at a delay(), which SIGKILL'd a healthy VM and
+     * surfaced as "QEMU crashed (SIGKILL)". A private single-thread executor's
+     * thread is never reaped on idle, so it lives exactly as long as QEMU.
+     * Shut down in cleanup(), after QEMU has already exited.
+     */
+    private var qemuDispatcher: ExecutorCoroutineDispatcher? = null
 
     private var bootStartTime: Long = 0L
 
@@ -256,7 +270,16 @@ class QemuEngine @Inject constructor(
             val pb = ProcessBuilder(cmd).directory(context.filesDir)
             pb.environment()["LD_LIBRARY_PATH"] = "$nativeDir:${context.filesDir.absolutePath}"
 
-            val proc = pb.start()
+            // Fork QEMU on a private, long-lived thread (see qemuDispatcher).
+            // PR_SET_PDEATHSIG (set by libpodroid-launcher) is thread-scoped, so
+            // the spawning thread must outlive QEMU — a Dispatchers.IO pool
+            // thread does not. waitFor() below runs on this same thread.
+            val dispatcher = Executors.newSingleThreadExecutor { r ->
+                Thread(r, "podroid-qemu").apply { isDaemon = true }
+            }.asCoroutineDispatcher()
+            qemuDispatcher = dispatcher
+
+            val proc = withContext(dispatcher) { pb.start() }
             process = proc
             _bootStage.value = "Booting kernel..."
 
@@ -315,8 +338,9 @@ class QemuEngine @Inject constructor(
                 }
             }
 
-            // Block until QEMU exits (keeps the calling service coroutine alive)
-            val exitCode = proc.waitFor()
+            // Block until QEMU exits, ON THE SAME dedicated thread that fork'd
+            // it, so PR_SET_PDEATHSIG never fires while QEMU is healthy.
+            val exitCode = withContext(dispatcher) { proc.waitFor() }
             Log.d(TAG, "QEMU exited: $exitCode")
             cleanup()
             _state.value = if (exitCode == 0) VmState.Stopped
@@ -461,6 +485,10 @@ class QemuEngine @Inject constructor(
         releaseSerial()
         ioScope?.cancel()
         ioScope = null
+        // QEMU has already exited by the time cleanup() runs, so retiring its
+        // spawning thread here cannot trip PR_SET_PDEATHSIG against a live VM.
+        qemuDispatcher?.close()
+        qemuDispatcher = null
         process = null
         _terminalSession?.finishIfRunning()
         _terminalSession = null
