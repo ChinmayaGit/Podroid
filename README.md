@@ -77,10 +77,12 @@ Default login: **root / podroid**.
 - **Linux 7.0.5 kernel**, custom-built. Every container option compiled `=y`; the build fails if any get demoted.
 - **Podman, Docker and LXC pre-installed.** Rootless Podman wired up with crun + netavark + slirp4netns; `rc-service docker start` or `lxc-create …` work out of the box.
 - **OpenRC as PID 1.** `apk add` whatever you want, `rc-service ... start`, and it persists across reboots.
-- **In-app X11 viewer** (Xvnc + PulseAudio) with touch→mouse, soft-keyboard input, and PCM audio over loopback.
+- **In-app X11 viewer** (Xvnc + PulseAudio): live-resizable display (match-device, or 720p–1440p / custom presets), direct-touch and trackpad pointer modes with scroll, fullscreen, rotation lock, external-keyboard and mouse-wheel support, soft-keyboard input, and PCM audio over loopback.
 - **Built-in terminal** powered by the Termux engine: xterm-256color, mouse tracking, debounced resize, customizable extra-keys row.
 - **Persistent ext4 overlay** on a read-only Alpine squashfs. Installs and configs survive every reboot.
 - **Adaptive Material 3 UI** for phone, tablet and landscape, with dynamic color and a foreground service that keeps the VM alive.
+
+> **Known limitation (X11 viewer):** with an external mouse, right-click currently exits fullscreen instead of reaching the desktop — Android maps a mouse right-click to the Back action. Two-finger right-click via touch works. A fix is planned.
 
 ## Themes & fonts
 

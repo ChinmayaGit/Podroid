@@ -63,6 +63,37 @@ object AvfReflect {
         invokeDecl(b, "setProtectedVm", Boolean::class.javaPrimitiveType!! to value)
     }
 
+    /**
+     * VirtualMachineManager.getCapabilities() — bitmask of
+     * AvfCapabilities.CAPABILITY_*. Returns 0 if the method is absent on an
+     * older AVF revision; that 0 maps to ProtectedVmChoice.Unknown (we then
+     * attempt non-protected and let any framework exception surface). This
+     * runCatching tolerates a MISSING method only — it is not used to hide a
+     * failure on a method that exists.
+     */
+    fun getCapabilities(mgr: Any): Int =
+        runCatching { invokeDecl(mgr, "getCapabilities") as? Int ?: 0 }.getOrDefault(0)
+
+    /**
+     * Applies the capability-driven protected-VM choice to a VM config builder.
+     * Returns the choice so the caller can fall back to QEMU on Unsupported.
+     *
+     * On the Unknown path we call setProtectedVm(false) WITHOUT catching: if the
+     * framework throws UnsupportedOperationException("Non-protected VMs are not
+     * supported on this device.") that is the real #31 signal and must surface.
+     * On Unsupported we do NOT call the setter — the caller must not proceed to
+     * build() (which would throw the misleading "must be called explicitly").
+     */
+    fun applyProtectedVm(mgr: Any, builder: Any): AvfCapabilities.ProtectedVmChoice {
+        val choice = AvfCapabilities.choose(getCapabilities(mgr))
+        when (choice) {
+            is AvfCapabilities.ProtectedVmChoice.NonProtected -> setProtectedVm(builder, false)
+            is AvfCapabilities.ProtectedVmChoice.Unknown      -> setProtectedVm(builder, false)
+            is AvfCapabilities.ProtectedVmChoice.Unsupported  -> Unit
+        }
+        return choice
+    }
+
     fun setMemoryBytes(b: Any, bytes: Long) {
         invokeDecl(b, "setMemoryBytes", Long::class.javaPrimitiveType!! to bytes)
     }

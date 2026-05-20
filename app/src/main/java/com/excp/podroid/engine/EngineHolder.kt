@@ -18,6 +18,7 @@ import android.content.Context
 import com.excp.podroid.data.repository.PortForwardRepository
 import com.excp.podroid.data.repository.PortForwardRule
 import com.excp.podroid.data.repository.SettingsRepository
+import com.excp.podroid.engine.avf.AvfCapabilities
 import com.excp.podroid.engine.avf.AvfDiagnostics
 import com.excp.podroid.engine.avf.AvfEngine
 import com.termux.terminal.TerminalSession
@@ -100,19 +101,31 @@ class EngineHolder @Inject constructor(
 
     private fun pick(sel: EngineSelection): VmEngine {
         val probe = AvfDiagnostics.probe(context)
+        val avfUsable = probe.featureSupported &&
+            probe.managePermissionGranted &&
+            probe.customPermissionGranted &&
+            AvfCapabilities.choose(probe.capabilitiesRaw) !is
+                AvfCapabilities.ProtectedVmChoice.Unsupported
         return when {
             sel == EngineSelection.QEMU -> qemuProvider.get()
-            // AVF forced: no capability check; if unsupported, AvfEngine surfaces the error.
-            sel == EngineSelection.AVF  -> avfProvider.get()
-            probe.featureSupported &&
-                probe.managePermissionGranted &&
-                probe.customPermissionGranted -> avfProvider.get()
+            sel == EngineSelection.AVF && AvfCapabilities.choose(probe.capabilitiesRaw) is
+                AvfCapabilities.ProtectedVmChoice.Unsupported -> {
+                android.util.Log.w(
+                    TAG,
+                    "AVF forced but device is protected-only; falling back to QEMU. " +
+                        "caps=${probe.capabilitiesRaw}(${probe.capabilitiesDecoded})"
+                )
+                qemuProvider.get()
+            }
+            sel == EngineSelection.AVF -> avfProvider.get()
+            avfUsable -> avfProvider.get()
             else -> qemuProvider.get()
         }.also {
             android.util.Log.i(
                 TAG,
                 "pick: selection=$sel feature=${probe.featureSupported} " +
-                    "perms=${probe.managePermissionGranted}/${probe.customPermissionGranted} → ${it.backendId}"
+                    "perms=${probe.managePermissionGranted}/${probe.customPermissionGranted} " +
+                    "caps=${probe.capabilitiesRaw}(${probe.capabilitiesDecoded}) → ${it.backendId}"
             )
         }
     }

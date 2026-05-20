@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.excp.podroid.BuildConfig
 import com.excp.podroid.data.repository.PortForwardRule
@@ -271,6 +272,16 @@ fun SettingsScreen(
                     onClick = { viewModel.exportConsoleLogs() },
                 )
                 Spacer(Modifier.height(PodroidTokens.Spacing.SM))
+                val avfVerbose by viewModel.avfVerboseLogging.collectAsState()
+                PodroidListRow(
+                    label = "Verbose AVF logging",
+                    rightSlot = {
+                        PodroidSwitch(
+                            checked = avfVerbose,
+                            onCheckedChange = { viewModel.setAvfVerboseLogging(it) },
+                        )
+                    },
+                )
                 PodroidGhostButton(
                     text = if (avfRunning) "Running AVF diagnostic…" else "AVF (pKVM) diagnostic",
                     onClick = {

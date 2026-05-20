@@ -17,6 +17,10 @@ XVNC_LOGFILE=/var/log/xvnc.log
 start() {
     ebegin "Starting X11 server (Xvnc + pulseaudio)"
 
+    # Read per-boot DPI from the kernel cmdline token written by the Android app.
+    XVNC_DPI=$(awk -v RS=' ' -F= '/^podroid.x11.dpi=/{print $2}' /proc/cmdline 2>/dev/null)
+    [ -z "$XVNC_DPI" ] && XVNC_DPI=96
+
     # /tmp lives on the persistent ext4 overlay, so a stale X server lock
     # from a previous boot will block Xvnc with "Server is already active
     # for display 0". Wipe both the .X0-lock file and the X11 unix socket
@@ -39,7 +43,9 @@ start() {
         -SecurityTypes None \
         -localhost no \
         -rfbport $XVNC_PORT \
-        -AlwaysShared
+        -AlwaysShared \
+        -dpi $XVNC_DPI \
+        -AcceptSetDesktopSize
 
     # PulseAudio: system-wide-style daemon writing raw S16LE PCM to TCP 4713.
     # We use --system=no with explicit XDG_RUNTIME_DIR so it runs as root

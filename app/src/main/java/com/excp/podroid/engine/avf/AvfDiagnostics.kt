@@ -31,6 +31,8 @@ data class AvfReport(
     val managerClassPresent: Boolean,
     val serviceReachable: Boolean,
     val smokeTestResult: String?,
+    val capabilitiesRaw: Int = 0,
+    val capabilitiesDecoded: String = "n/a",
     val activeBackend: String = "?",
 ) {
     fun pretty(): String = buildString {
@@ -54,6 +56,9 @@ data class AvfReport(
         appendLine()
         appendLine("Service")
         appendLine("  reachable via system service = $serviceReachable")
+        appendLine()
+        appendLine("Hypervisor capabilities")
+        appendLine("  raw = $capabilitiesRaw ($capabilitiesDecoded)")
         if (smokeTestResult != null) {
             appendLine()
             appendLine("Smoke test")
@@ -113,6 +118,10 @@ object AvfDiagnostics {
         val serviceReachable = managerClassPresent && managePermissionGranted &&
             runCatching { getVirtualizationManager(context) != null }.getOrDefault(false)
 
+        val capabilitiesRaw = if (serviceReachable) {
+            runCatching { AvfReflect.getCapabilities(AvfReflect.manager(context)) }.getOrDefault(0)
+        } else 0
+
         return AvfReport(
             featureSupported = featureSupported,
             managePermissionGranted = managePermissionGranted,
@@ -121,6 +130,8 @@ object AvfDiagnostics {
             managerClassPresent = managerClassPresent,
             serviceReachable = serviceReachable,
             smokeTestResult = null,
+            capabilitiesRaw = capabilitiesRaw,
+            capabilitiesDecoded = AvfCapabilities.decode(capabilitiesRaw),
         )
     }
 
@@ -150,7 +161,7 @@ object AvfDiagnostics {
                 ?: return "FAILED: VirtualMachineManager system service returned null"
 
             val customCfg = buildCustomImageConfig(kernel.absolutePath, initrd.absolutePath)
-            val config = buildVirtualMachineConfig(context, customCfg)
+            val config = buildVirtualMachineConfig(vmm, context, customCfg)
 
             val name = "podroid-avf-smoke"
             val vm = invokeOrCreate(vmm, name, config)
@@ -200,15 +211,16 @@ object AvfDiagnostics {
         return buildM.invoke(builder)
     }
 
-    private fun buildVirtualMachineConfig(context: Context, customCfg: Any): Any {
+    private fun buildVirtualMachineConfig(vmm: Any, context: Context, customCfg: Any): Any {
         val builderCls = Class.forName("$CLS_CONFIG\$Builder")
         val ctor = builderCls.getDeclaredConstructor(Context::class.java).apply { isAccessible = true }
         val builder = ctor.newInstance(context)
         val customCfgCls = Class.forName(CLS_CUSTOM_CFG)
         invokeSetter(builderCls, builder, "setCustomImageConfig", customCfgCls, customCfg)
-        runCatching {
-            invokeSetter(builderCls, builder, "setProtectedVm",
-                Boolean::class.javaPrimitiveType!!, false)
+        when (val choice = AvfReflect.applyProtectedVm(vmm, builder)) {
+            is AvfCapabilities.ProtectedVmChoice.Unsupported ->
+                throw UnsupportedOperationException(choice.reason)
+            else -> Unit  // NonProtected/Unknown: setter already applied (or threw, which surfaces)
         }
         runCatching {
             invokeSetter(builderCls, builder, "setMemoryBytes",

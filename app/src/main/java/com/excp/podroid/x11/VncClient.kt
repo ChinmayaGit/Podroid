@@ -3,8 +3,7 @@
  * Copyright (C) 2024-2026 Podroid contributors
  *
  * Minimal RFB 3.8 client. Supports SecurityType None, Raw + CopyRect +
- * Cursor pseudo encodings. Designed for loopback (SLIRP) so we don't
- * bother with Tight / ZRLE / TLS.
+ * ExtendedDesktopSize + ZRLE encodings. Designed for loopback (SLIRP).
  */
 package com.excp.podroid.x11
 
@@ -68,6 +67,8 @@ object VncClient {
     private const val MSG_FRAMEBUFFER_UPDATE: Int = 0
     private const val ENC_RAW: Int = 0
     private const val ENC_COPY_RECT: Int = 1
+    private const val ENC_ZRLE = 16
+    private const val ENC_EXTENDED_DESKTOP_SIZE = -308
 
     /**
      * Sends SetPixelFormat to lock the server to 32-bit BGRA, then SetEncodings
@@ -85,15 +86,18 @@ object VncClient {
         )
         out.write(pf)
 
-        // SetEncodings (msg=2): num-encodings=2, [Raw, CopyRect]
-        val se = byteArrayOf(
-            0x02, 0x00,                                     // msg + pad
-            0x00, 0x02,                                     // count = 2
-            0x00, 0x00, 0x00, 0x00,                         // Raw
-            0x00, 0x00, 0x00, 0x01,                         // CopyRect
-        )
-        out.write(se)
-        out.flush()
+        // SetEncodings (msg=2): CopyRect, Raw, ExtendedDesktopSize(-308).
+        // ZRLE is intentionally NOT advertised: the decoder desyncs its
+        // continuous zlib stream on complex content (Firefox/xfce send palette/
+        // RLE tiles), producing "invalid distance code" which kills the whole
+        // VNC session. Raw has no zlib state so it can't desync. Re-enable only
+        // after the ZrleDecoder is fixed + verified against real captured tiles.
+        val se = java.nio.ByteBuffer.allocate(4 + 3 * 4)
+        se.put(2.toByte()); se.put(0.toByte()); se.putShort(3)
+        se.putInt(1)      // CopyRect
+        se.putInt(0)      // Raw
+        se.putInt(-308)   // ExtendedDesktopSize
+        out.write(se.array()); out.flush()
     }
 
     /**
@@ -118,104 +122,83 @@ object VncClient {
         out.flush()
     }
 
-    /**
-     * Reads a FramebufferUpdate message and copies decoded pixels into `targetArgb`
-     * at row stride `stride`. Only Raw and CopyRect encodings are handled.
-     */
-    fun readFramebufferUpdate(inp: InputStream, targetArgb: IntArray, stride: Int) {
+    data class RfbUpdate(val newSize: VncSize?, val damage: List<VncRect>)
+
+    fun readFramebufferUpdate(inp: InputStream, targetArgb: IntArray, stride: Int, zrle: ZrleDecoder): RfbUpdate {
         val din = DataInputStream(inp)
-        // RFB servers interleave non-rect messages (Bell, ColourMap, ClipBoard)
-        // with FramebufferUpdates. Older versions of this client `require`'d
-        // type==0 and bailed on type 3 (ServerCutText, clipboard share) which
-        // Xvnc sends opportunistically — that's the "unexpected msg 3" the
-        // user saw mid-Firefox-video. Skip the bytes for each non-fatal type
-        // and loop until a FramebufferUpdate actually arrives.
         var msgType: Int
         while (true) {
             msgType = din.readUnsignedByte()
             when (msgType) {
-                MSG_FRAMEBUFFER_UPDATE -> break  // fall through to rect parsing
-                1 -> {  // SetColourMapEntries: pad(1) + first(2) + n(2) + n*6
-                    din.skipBytes(1)
-                    din.readUnsignedShort()
-                    val n = din.readUnsignedShort()
-                    din.skipBytes(n * 6)
-                }
-                2 -> { /* Bell: no body */ }
-                3 -> {  // ServerCutText: pad(3) + length(4) + text[length]
-                    din.skipBytes(3)
-                    val len = din.readInt()
-                    if (len in 0..(1 shl 20)) din.skipBytes(len)
-                    else throw java.io.IOException("ServerCutText absurd length=$len")
-                }
+                MSG_FRAMEBUFFER_UPDATE -> break
+                1 -> { din.skipBytes(1); din.readUnsignedShort(); val n = din.readUnsignedShort(); din.skipBytes(n * 6) }
+                2 -> { }
+                3 -> { din.skipBytes(3); val len = din.readInt(); if (len in 0..(1 shl 20)) din.skipBytes(len) else throw java.io.IOException("ServerCutText absurd length=$len") }
                 else -> throw java.io.IOException("unexpected RFB server msg type $msgType")
             }
         }
         din.skipBytes(1)
         val numRects = din.readUnsignedShort()
-
-        // Reused row scratch — only reallocated when a wider rect arrives.
-        // Without this, a 1280x720 frame at 60 fps allocates 720 ByteArrays
-        // per refresh (~300 KB/s GC pressure).
         var rowBuf: ByteArray? = null
+        var newSize: VncSize? = null
+        val damage = ArrayList<VncRect>(numRects)
 
         repeat(numRects) {
-            val x = din.readUnsignedShort()
-            val y = din.readUnsignedShort()
-            val w = din.readUnsignedShort()
-            val h = din.readUnsignedShort()
+            val x = din.readUnsignedShort(); val y = din.readUnsignedShort()
+            val w = din.readUnsignedShort(); val h = din.readUnsignedShort()
             val enc = din.readInt()
-
             when (enc) {
+                ENC_EXTENDED_DESKTOP_SIZE -> {       // -308: w/h are the new fb dims
+                    val screens = din.readUnsignedByte(); din.skipBytes(3)
+                    din.skipBytes(screens * 16)      // we use a single-screen model; dims come from w/h
+                    newSize = VncSize(w, h)
+                }
                 ENC_RAW -> {
-                    // 4 bytes BGRA per pixel.
                     val needed = w * 4
-                    val existing = rowBuf
-                    val rowPixels = if (existing == null || existing.size < needed) {
-                        ByteArray(needed).also { rowBuf = it }
-                    } else {
-                        existing
-                    }
+                    val rowPixels = rowBuf?.takeIf { it.size >= needed } ?: ByteArray(needed).also { rowBuf = it }
                     for (row in 0 until h) {
                         din.readFully(rowPixels, 0, needed)
-                        var off = 0
-                        val baseIdx = (y + row) * stride + x
+                        var off = 0; val base = (y + row) * stride + x
                         for (col in 0 until w) {
                             val b = rowPixels[off].toInt() and 0xFF
                             val g = rowPixels[off + 1].toInt() and 0xFF
                             val r = rowPixels[off + 2].toInt() and 0xFF
-                            // Alpha byte from server is ignored — RFB true-color
-                            // doesn't really have alpha; we force opaque.
-                            targetArgb[baseIdx + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                            targetArgb[base + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                             off += 4
                         }
                     }
+                    damage.add(VncRect(x, y, w, h))
                 }
                 ENC_COPY_RECT -> {
-                    val srcX = din.readUnsignedShort()
-                    val srcY = din.readUnsignedShort()
-                    // Copy with downward/upward order awareness.
-                    if (srcY < y) {
-                        for (row in h - 1 downTo 0) {
-                            System.arraycopy(
-                                targetArgb, (srcY + row) * stride + srcX,
-                                targetArgb, (y + row) * stride + x,
-                                w,
-                            )
-                        }
-                    } else {
-                        for (row in 0 until h) {
-                            System.arraycopy(
-                                targetArgb, (srcY + row) * stride + srcX,
-                                targetArgb, (y + row) * stride + x,
-                                w,
-                            )
-                        }
-                    }
+                    val srcX = din.readUnsignedShort(); val srcY = din.readUnsignedShort()
+                    if (srcY < y) for (row in h - 1 downTo 0) System.arraycopy(targetArgb, (srcY + row) * stride + srcX, targetArgb, (y + row) * stride + x, w)
+                    else for (row in 0 until h) System.arraycopy(targetArgb, (srcY + row) * stride + srcX, targetArgb, (y + row) * stride + x, w)
+                    damage.add(VncRect(x, y, w, h))
+                }
+                ENC_ZRLE -> {
+                    zrle.decode(din, x, y, w, h, targetArgb, stride)
+                    damage.add(VncRect(x, y, w, h))
                 }
                 else -> error("unsupported encoding $enc")
             }
         }
+        return RfbUpdate(newSize, damage)
+    }
+
+    const val BTN_LEFT = 1; const val BTN_MIDDLE = 2; const val BTN_RIGHT = 4
+    const val BTN_WHEEL_UP = 8; const val BTN_WHEEL_DOWN = 16
+
+    /** SetDesktopSize (msg 251): request a single-screen desktop of width x height. */
+    fun requestDesktopSize(out: OutputStream, screenId: Int, width: Int, height: Int) {
+        val buf = java.nio.ByteBuffer.allocate(24)   // 8 header + 16 screen
+        buf.put(251.toByte()); buf.put(0.toByte())
+        buf.putShort(width.toShort()); buf.putShort(height.toShort())
+        buf.put(1.toByte()); buf.put(0.toByte())     // number-of-screens=1, pad
+        buf.putInt(screenId)                         // id
+        buf.putShort(0); buf.putShort(0)             // x, y
+        buf.putShort(width.toShort()); buf.putShort(height.toShort())
+        buf.putInt(0)                                // flags
+        out.write(buf.array()); out.flush()
     }
 
     private const val MSG_KEY_EVENT: Byte = 4

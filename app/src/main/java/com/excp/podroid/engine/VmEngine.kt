@@ -67,4 +67,6 @@ data class VmConfig(
     val storageAccessEnabled: Boolean = false,
     val qemuExtraArgs: String = "",
     val kernelExtraCmdline: String = "",
+    val verboseLogging: Boolean = false,
+    val x11Dpi: Int = 96,
 )

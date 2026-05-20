@@ -162,6 +162,13 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.setEngineSelection(value) }
     }
 
+    val avfVerboseLogging: StateFlow<Boolean> = settingsRepository.avfVerboseLogging
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setAvfVerboseLogging(value: Boolean) {
+        viewModelScope.launch { settingsRepository.setAvfVerboseLogging(value) }
+    }
+
     fun setVmRamMb(value: Int) {
         viewModelScope.launch { settingsRepository.setVmRamMb(value) }
     }
@@ -338,6 +345,13 @@ class SettingsViewModel @Inject constructor(
                     appendLine("${rule.protocol.uppercase()}  localhost:${rule.hostPort} -> VM:${rule.guestPort}")
                 }
             }
+            appendLine()
+
+            val avf = com.excp.podroid.engine.avf.AvfDiagnostics.probe(context)
+            appendLine("== AVF ==")
+            appendLine("backend = ${activeBackendId()}")
+            appendLine("capabilities = ${avf.capabilitiesRaw} (${avf.capabilitiesDecoded})")
+            appendLine("verboseLogging = ${settingsRepository.getAvfVerboseLoggingSnapshot()}")
             appendLine()
 
             appendLine("=== App Logcat (this process) ===")

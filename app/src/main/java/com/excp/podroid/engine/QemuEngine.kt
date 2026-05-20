@@ -502,6 +502,7 @@ class QemuEngine @Inject constructor(
                 if (userKernelExtras.isNotEmpty()) append(" ").append(userKernelExtras)
                 append(" androidip=").append(config.androidIp)
                 if (config.sshEnabled) append(" ssh=1")
+                append(" podroid.x11.dpi=").append(config.x11Dpi)
             }
             args += "-append"; args += cmdline
         } else {

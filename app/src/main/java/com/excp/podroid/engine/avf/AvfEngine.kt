@@ -176,7 +176,7 @@ class AvfEngine @Inject constructor(
 
         try {
             val mgr = AvfReflect.manager(context)
-            val vmConfigObj = buildConfig(config)
+            val vmConfigObj = buildConfig(mgr, config)
 
             // AOSP canonical pattern: get-or-create, then attempt to update the
             // config on the existing VM. If AVF rejects the new config as
@@ -197,20 +197,23 @@ class AvfEngine @Inject constructor(
 
             val cb = AvfReflect.newVmCallback(
                 onError = { code, msg ->
-                    Log.e(TAG, "VM onError code=$code msg=$msg")
-                    _state.value = VmState.Error("AVF onError($code): ${msg ?: "no message"}")
+                    Log.e(TAG, "VM onError ${AvfReasonCodes.errorCode(code)} msg=$msg")
+                    _state.value = VmState.Error(
+                        "AVF onError(${AvfReasonCodes.errorCode(code)}): ${msg ?: "no message"}"
+                    )
                 },
                 onStopped = { reason ->
-                    Log.i(TAG, "VM onStopped reason=$reason")
+                    Log.i(TAG, "VM onStopped ${AvfReasonCodes.stopReason(reason)}")
                     if (_state.value is VmState.Running) {
                         _state.value = VmState.Stopped
                     } else if (_state.value is VmState.Starting) {
-                        // Stopped during boot — surface as error so the UI shows it.
-                        _state.value = VmState.Error("VM exited during boot (reason=$reason)")
+                        _state.value = VmState.Error(
+                            "VM exited during boot (${AvfReasonCodes.stopReason(reason)})"
+                        )
                     }
                 },
                 onDied = { reason ->
-                    Log.w(TAG, "VM onDied reason=$reason")
+                    Log.w(TAG, "VM onDied ${AvfReasonCodes.stopReason(reason)}")
                 },
             )
             AvfReflect.setCallback(vm, java.util.concurrent.ForkJoinPool.commonPool(), cb)
@@ -488,7 +491,7 @@ class AvfEngine @Inject constructor(
         return raw
     }
 
-    private fun buildConfig(config: VmConfig): Any {
+    private fun buildConfig(mgr: Any, config: VmConfig): Any {
         val kernelSrc = File(context.filesDir, "vmlinuz-virt").also {
             require(it.exists()) { "kernel missing at ${it.absolutePath}" }
         }
@@ -523,11 +526,16 @@ class AvfEngine @Inject constructor(
         // wire an RTC the way QEMU TCG does, so without this the guest
         // boots at 1970-01-01 and TLS fails on every cert.
         val epoch = System.currentTimeMillis() / 1000
-        AvfReflect.addParams(cb,
-            "console=hvc0 root=/dev/ram0 mitigations=off elevator=mq-deadline " +
+        val resolvedCmdline = ("console=hvc0 root=/dev/ram0 mitigations=off elevator=mq-deadline " +
             "podroid.tty=hvc0 podroid.backend=avf podroid.epoch=$epoch " +
-            "${config.kernelExtraCmdline}".trim()
-        )
+            "podroid.x11.dpi=${config.x11Dpi} " +
+            config.kernelExtraCmdline).trim()
+        AvfReflect.addParams(cb, resolvedCmdline)
+        if (config.verboseLogging) {
+            Log.i(TAG, "verbose: resolved cmdline = $resolvedCmdline")
+            Log.i(TAG, "verbose: ramMb=${config.ramMb} cpus=${config.cpus} " +
+                "storageAccess=${config.storageAccessEnabled}")
+        }
         AvfReflect.addDisk(cb, storage.absolutePath, writable = true)
         AvfReflect.addDisk(cb, squashfs.absolutePath, writable = false)
         if (config.storageAccessEnabled) {
@@ -569,7 +577,14 @@ class AvfEngine @Inject constructor(
         val customCfg = AvfReflect.build(cb)
 
         val vb = AvfReflect.newVmConfigBuilder(context)
-        AvfReflect.setProtectedVm(vb, false)
+        when (val choice = AvfReflect.applyProtectedVm(mgr, vb)) {
+            is AvfCapabilities.ProtectedVmChoice.Unsupported ->
+                throw UnsupportedOperationException(choice.reason)
+            is AvfCapabilities.ProtectedVmChoice.NonProtected ->
+                Log.i(TAG, "protectedVm=false (device supports non-protected VMs)")
+            is AvfCapabilities.ProtectedVmChoice.Unknown ->
+                Log.w(TAG, "getCapabilities() unavailable; attempted protectedVm=false")
+        }
         AvfReflect.setMemoryBytes(vb, config.ramMb.toLong() * 1024 * 1024)
         AvfReflect.setNumCpus(vb, config.cpus)
         AvfReflect.setDebugLevel(vb, AvfReflect.DEBUG_LEVEL_FULL)

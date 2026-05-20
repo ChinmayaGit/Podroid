@@ -72,10 +72,39 @@ class VncClientTest {
             inp = java.io.ByteArrayInputStream(msg),
             targetArgb = target,
             stride = 2,
+            zrle = ZrleDecoder(),
         )
 
         // ARGB packed: 0xAARRGGBB
         assertEquals(0xFFFF0000.toInt(), target[0])  // red
         assertEquals(0xFF00FF00.toInt(), target[1])  // green
+    }
+
+    @Test fun `requestDesktopSize serializes type 251 single-screen layout`() {
+        val out = java.io.ByteArrayOutputStream()
+        VncClient.requestDesktopSize(out, screenId = 7, width = 1920, height = 1080)
+        val b = out.toByteArray()
+        assertEquals(24, b.size)
+        assertEquals(251, b[0].toInt() and 0xFF)          // msg-type
+        // width @ offset 2..3, height @ 4..5 (big-endian)
+        assertEquals(1920, ((b[2].toInt() and 0xFF) shl 8) or (b[3].toInt() and 0xFF))
+        assertEquals(1080, ((b[4].toInt() and 0xFF) shl 8) or (b[5].toInt() and 0xFF))
+        assertEquals(1, b[6].toInt() and 0xFF)            // number-of-screens
+        // screen id @ 8..11
+        assertEquals(7, ((b[8].toInt() and 0xFF) shl 24) or ((b[9].toInt() and 0xFF) shl 16) or ((b[10].toInt() and 0xFF) shl 8) or (b[11].toInt() and 0xFF))
+    }
+
+    @Test fun `ExtendedDesktopSize rect reports new size and writes no pixels`() {
+        // FramebufferUpdate: type=0, pad, numRects=1; rect x=0 y=0 w=800 h=600 enc=-308;
+        // body: screens=1 pad[3]; screen{id=1,x=0,y=0,w=800,h=600,flags=0}
+        val bos = java.io.ByteArrayOutputStream()
+        val d = java.io.DataOutputStream(bos)
+        d.writeByte(0); d.writeByte(0); d.writeShort(1)             // msg, pad, numRects
+        d.writeShort(0); d.writeShort(0); d.writeShort(800); d.writeShort(600); d.writeInt(-308)
+        d.writeByte(1); d.writeByte(0); d.writeByte(0); d.writeByte(0)   // screens=1 + pad3
+        d.writeInt(1); d.writeShort(0); d.writeShort(0); d.writeShort(800); d.writeShort(600); d.writeInt(0)
+        val target = IntArray(800 * 600)
+        val r = VncClient.readFramebufferUpdate(java.io.ByteArrayInputStream(bos.toByteArray()), target, 800, ZrleDecoder())
+        assertEquals(VncSize(800, 600), r.newSize)
     }
 }

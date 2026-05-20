@@ -200,6 +200,8 @@ class PodroidService : Service() {
                         storageAccessEnabled = settingsRepository.getStorageAccessEnabledSnapshot(),
                         qemuExtraArgs = settingsRepository.getQemuExtraArgsSnapshot(),
                         kernelExtraCmdline = settingsRepository.getKernelExtraCmdlineSnapshot(),
+                        verboseLogging = settingsRepository.getAvfVerboseLoggingSnapshot(),
+                        x11Dpi = settingsRepository.getX11DpiSnapshot(),
                     )
                     engine.start(rules, config)
                 } catch (e: Exception) {

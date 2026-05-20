@@ -48,7 +48,20 @@ class SettingsRepository @Inject constructor(
         val KEY_DYNAMIC_COLOR_ENABLED  = booleanPreferencesKey("dynamic_color_enabled")
         val KEY_LAST_BOOT_DURATION_MS  = longPreferencesKey("last_boot_duration_ms")
         val KEY_ENGINE_SELECTION       = stringPreferencesKey("engine_selection")
-        val KEY_AVF_HINT_DISMISSED     = booleanPreferencesKey("avf_hint_dismissed")
+        val KEY_AVF_HINT_DISMISSED      = booleanPreferencesKey("avf_hint_dismissed")
+        val KEY_AVF_VERBOSE_LOGGING     = booleanPreferencesKey("avf_verbose_logging")
+
+        val KEY_X11_RES_MODE        = stringPreferencesKey("x11_resolution_mode")
+        val KEY_X11_RES_PRESET      = stringPreferencesKey("x11_resolution_preset")
+        val KEY_X11_CUSTOM_W        = intPreferencesKey("x11_custom_w")
+        val KEY_X11_CUSTOM_H        = intPreferencesKey("x11_custom_h")
+        val KEY_X11_TOUCH_MODE      = stringPreferencesKey("x11_touch_mode")
+        val KEY_X11_TP_SENSITIVITY  = stringPreferencesKey("x11_tp_sensitivity") // float as string, DataStore has no float key helper used here
+        val KEY_X11_TP_ACCEL        = booleanPreferencesKey("x11_tp_accel")
+        val KEY_X11_FULLSCREEN      = booleanPreferencesKey("x11_fullscreen_default")
+        val KEY_X11_ROTATION        = stringPreferencesKey("x11_rotation_lock")
+        val KEY_X11_SHOW_EXTRA_KEYS = booleanPreferencesKey("x11_show_extra_keys")
+        val KEY_X11_DPI             = intPreferencesKey("x11_dpi")
 
         /**
          * Default tunable QEMU args — CPU model, accel tuning, RNG source, overcommit.
@@ -107,6 +120,9 @@ class SettingsRepository @Inject constructor(
     val dynamicColorEnabled  = pref(KEY_DYNAMIC_COLOR_ENABLED, false)
     val lastBootDurationMs   = pref(KEY_LAST_BOOT_DURATION_MS, 0L)
     val avfHintDismissed     = pref(KEY_AVF_HINT_DISMISSED, false)
+    val avfVerboseLogging: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_AVF_VERBOSE_LOGGING] ?: false
+    }
     val engineSelection: Flow<EngineSelection> = context.dataStore.data.map { prefs ->
         runCatching { EngineSelection.valueOf(prefs[KEY_ENGINE_SELECTION] ?: "AUTO") }
             .getOrDefault(EngineSelection.AUTO)
@@ -130,6 +146,35 @@ class SettingsRepository @Inject constructor(
     suspend fun setLastBootDurationMs(value: Long)       = set(KEY_LAST_BOOT_DURATION_MS, value)
     suspend fun setEngineSelection(value: EngineSelection) = set(KEY_ENGINE_SELECTION, value.name)
     suspend fun setAvfHintDismissed(value: Boolean)      = set(KEY_AVF_HINT_DISMISSED, value)
+    suspend fun setAvfVerboseLogging(value: Boolean)     = set(KEY_AVF_VERBOSE_LOGGING, value)
+
+    val x11Settings: kotlinx.coroutines.flow.Flow<com.excp.podroid.x11.X11Settings> = context.dataStore.data.map { p ->
+        com.excp.podroid.x11.X11Settings(
+            resolutionMode = runCatching { com.excp.podroid.x11.ResolutionMode.valueOf(p[KEY_X11_RES_MODE] ?: "MATCH") }.getOrDefault(com.excp.podroid.x11.ResolutionMode.MATCH),
+            preset = runCatching { com.excp.podroid.x11.ResolutionPreset.valueOf(p[KEY_X11_RES_PRESET] ?: "R1080P") }.getOrDefault(com.excp.podroid.x11.ResolutionPreset.R1080P),
+            customW = p[KEY_X11_CUSTOM_W] ?: 1280,
+            customH = p[KEY_X11_CUSTOM_H] ?: 720,
+            touchMode = runCatching { com.excp.podroid.x11.TouchMode.valueOf(p[KEY_X11_TOUCH_MODE] ?: "DIRECT") }.getOrDefault(com.excp.podroid.x11.TouchMode.DIRECT),
+            trackpadSensitivity = (p[KEY_X11_TP_SENSITIVITY]?.toFloatOrNull() ?: 1.5f),
+            trackpadAccel = p[KEY_X11_TP_ACCEL] ?: true,
+            fullscreenDefault = p[KEY_X11_FULLSCREEN] ?: false,
+            rotationLock = runCatching { com.excp.podroid.x11.RotationLock.valueOf(p[KEY_X11_ROTATION] ?: "AUTO") }.getOrDefault(com.excp.podroid.x11.RotationLock.AUTO),
+            showExtraKeys = p[KEY_X11_SHOW_EXTRA_KEYS] ?: true,
+            dpi = p[KEY_X11_DPI] ?: 96,
+        )
+    }
+
+    suspend fun setX11ResolutionMode(v: String) = set(KEY_X11_RES_MODE, v)
+    suspend fun setX11Preset(v: String) = set(KEY_X11_RES_PRESET, v)
+    suspend fun setX11Custom(w: Int, h: Int) { set(KEY_X11_CUSTOM_W, w); set(KEY_X11_CUSTOM_H, h) }
+    suspend fun setX11TouchMode(v: String) = set(KEY_X11_TOUCH_MODE, v)
+    suspend fun setX11TrackpadSensitivity(v: Float) = set(KEY_X11_TP_SENSITIVITY, v.toString())
+    suspend fun setX11TrackpadAccel(v: Boolean) = set(KEY_X11_TP_ACCEL, v)
+    suspend fun setX11Fullscreen(v: Boolean) = set(KEY_X11_FULLSCREEN, v)
+    suspend fun setX11Rotation(v: String) = set(KEY_X11_ROTATION, v)
+    suspend fun setX11ShowExtraKeys(v: Boolean) = set(KEY_X11_SHOW_EXTRA_KEYS, v)
+    suspend fun setX11Dpi(v: Int) = set(KEY_X11_DPI, v)
+    suspend fun getX11DpiSnapshot() = (x11Settings.first()).dpi
 
     // Snapshots used by non-Compose call sites (PodroidService, exporters).
     suspend fun getSshEnabledSnapshot()           = sshEnabled.first()
@@ -143,4 +188,5 @@ class SettingsRepository @Inject constructor(
     suspend fun getQemuExtraArgsSnapshot()        = qemuExtraArgs.first()
     suspend fun getKernelExtraCmdlineSnapshot()   = kernelExtraCmdline.first()
     suspend fun getEngineSelectionSnapshot()      = engineSelection.first()
+    suspend fun getAvfVerboseLoggingSnapshot()    = avfVerboseLogging.first()
 }
