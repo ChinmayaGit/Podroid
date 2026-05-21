@@ -21,7 +21,9 @@ import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import java.io.InputStream
@@ -38,39 +40,62 @@ class VsockPortForwarder(
     private val vm: Any,
     private val scope: CoroutineScope,
 ) {
-    companion object { private const val TAG = "VsockPortForwarder" }
+    companion object {
+        private const val TAG = "VsockPortForwarder"
+        // A runtime-added rule sends the control ADD then immediately starts the
+        // listener; the guest agent forks its vsock listener asynchronously, so
+        // the very first connection can land in the gap and get ECONNREFUSED.
+        // Mirror the control channel's retry, but briefly (per-connection).
+        private const val CONNECT_ATTEMPTS = 6
+        private const val CONNECT_RETRY_MS = 250L
+    }
 
     private var server: ServerSocket? = null
-    private val jobs = mutableListOf<Job>()
+    // Parent of every per-connection coroutine so close() cancels them all at
+    // once and completed connections don't accumulate Job references for the
+    // forwarder's lifetime (the old plain list never removed finished jobs).
+    private val connections = SupervisorJob()
+    private var acceptJob: Job? = null
+    // Live client sockets — force-closed in close() so a pump blocked in a
+    // native read() unblocks (cancel() alone can't interrupt a blocking read).
+    private val openSockets = java.util.Collections.synchronizedSet(mutableSetOf<Socket>())
     @Volatile private var closed = false
 
     fun start() {
         val s = ServerSocket(hostPort, /* backlog */ 16, InetAddress.getByName("0.0.0.0"))
         server = s
         Log.d(TAG, "listening on 0.0.0.0:$hostPort → vsock:$guestVsockPort")
-        jobs += scope.launch(Dispatchers.IO) {
+        acceptJob = scope.launch(Dispatchers.IO) {
             while (!closed) {
                 val client = try { s.accept() } catch (_: SocketException) { break }
-                jobs += scope.launch(Dispatchers.IO) { proxy(client) }
+                openSockets.add(client)
+                scope.launch(Dispatchers.IO + connections) { proxy(client) }
             }
         }
     }
 
     private suspend fun proxy(tcp: Socket) = coroutineScope {
-        val pfd = try {
-            AvfReflect.connectVsock(vm, guestVsockPort.toLong())
-        } catch (e: Throwable) {
-            // Surface the underlying ErrnoException class — e.message alone is
-            // null for many ECONNREFUSED/EAFNOSUPPORT paths, so the bare
-            // "${e.message}" gave "failed: null" with zero diagnostic value.
-            val cause = e.cause ?: e
-            Log.w(TAG, "connectVsock($guestVsockPort) failed: " +
-                "${cause.javaClass.simpleName}: ${cause.message ?: "(no message)"}")
+        val pfd = connectVsockWithRetry()
+        if (pfd == null) {
+            openSockets.remove(tcp)
+            runCatching { tcp.close() }
+            return@coroutineScope
+        }
+        // FD ownership: the read side owns `pfd`; the write side owns a dup of
+        // it. Each AutoClose stream closes exactly ONE descriptor, and there is
+        // no explicit pfd.close() in the finally. The previous code wrapped the
+        // SAME pfd in both an AutoCloseInputStream and an AutoCloseOutputStream
+        // AND closed it again in finally — three closers of one descriptor, a
+        // classic double-close / FD-reuse cross-talk hazard.
+        val pfdOut = runCatching { pfd.dup() }.getOrNull()
+        if (pfdOut == null) {
+            openSockets.remove(tcp)
+            runCatching { pfd.close() }
             runCatching { tcp.close() }
             return@coroutineScope
         }
         val vsockIn  = ParcelFileDescriptor.AutoCloseInputStream(pfd)
-        val vsockOut = ParcelFileDescriptor.AutoCloseOutputStream(pfd)
+        val vsockOut = ParcelFileDescriptor.AutoCloseOutputStream(pfdOut)
         val tcpIn  = tcp.getInputStream()
         val tcpOut = tcp.getOutputStream()
         try {
@@ -83,9 +108,30 @@ class VsockPortForwarder(
                 b.onJoin { a.cancel() }
             }
         } finally {
+            openSockets.remove(tcp)
             runCatching { tcp.close() }
-            runCatching { pfd.close() }
+            // Close both stream owners; each owns a distinct fd (pfd / its dup).
+            runCatching { vsockIn.close() }
+            runCatching { vsockOut.close() }
         }
+    }
+
+    private suspend fun connectVsockWithRetry(): ParcelFileDescriptor? {
+        var lastCause: Throwable? = null
+        repeat(CONNECT_ATTEMPTS) { attempt ->
+            if (closed) return null
+            val pfd = runCatching { AvfReflect.connectVsock(vm, guestVsockPort.toLong()) }
+                .getOrElse { lastCause = it.cause ?: it; null }
+            if (pfd != null) return pfd
+            if (attempt < CONNECT_ATTEMPTS - 1) delay(CONNECT_RETRY_MS)
+        }
+        // Surface the underlying ErrnoException class — e.message alone is null
+        // for many ECONNREFUSED/EAFNOSUPPORT paths, so the bare "${e.message}"
+        // gave "failed: null" with zero diagnostic value.
+        val cause = lastCause
+        Log.w(TAG, "connectVsock($guestVsockPort) failed after $CONNECT_ATTEMPTS attempts: " +
+            "${cause?.javaClass?.simpleName}: ${cause?.message ?: "(no message)"}")
+        return null
     }
 
     private fun copyUntilEof(src: InputStream, dst: OutputStream) {
@@ -102,8 +148,14 @@ class VsockPortForwarder(
     fun close() {
         if (closed) return
         closed = true
-        runCatching { server?.close() }
-        jobs.forEach { runCatching { it.cancel() } }
-        jobs.clear()
+        runCatching { server?.close() }            // unblocks accept()
+        runCatching { acceptJob?.cancel() }
+        // Force-close live sockets so pumps blocked in native read() throw + exit;
+        // cancelling the coroutines alone wouldn't interrupt a blocking read.
+        synchronized(openSockets) {
+            openSockets.forEach { runCatching { it.close() } }
+            openSockets.clear()
+        }
+        runCatching { connections.cancel() }
     }
 }

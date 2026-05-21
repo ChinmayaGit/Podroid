@@ -340,8 +340,13 @@ object AvfReflect {
                     onStopped(reason)
                 }
                 "onDied" -> {
-                    // some API revisions: onDied(VirtualMachine vm, int reason); others: onDied(int cid, int reason)
-                    val reason = args?.getOrNull((args.size - 1).coerceAtLeast(0)) as? Int ?: -1
+                    // Both documented shapes carry reason at index 1:
+                    //   onDied(VirtualMachine vm, int reason)
+                    //   onDied(int cid, int reason)
+                    // Use index 1 for consistency with onError/onStopped above
+                    // (an extra trailing arg in a future signature would otherwise
+                    // silently mis-decode under an args[last] strategy).
+                    val reason = args?.getOrNull(1) as? Int ?: -1
                     onDied(reason)
                 }
                 else -> Unit  // ignore onPayload* — those are Microdroid-only
@@ -359,10 +364,17 @@ object AvfReflect {
     }
 
     fun getStatus(vm: Any): Int =
-        invokeDecl(vm, "getStatus") as Int
+        (invokeDecl(vm, "getStatus") as? Int) ?: -1
 
     fun run(vm: Any) { invokeDecl(vm, "run") }
-    fun stop(vm: Any) { runCatching { invokeDecl(vm, "stop") } }
+
+    /**
+     * Signals the framework to stop the VM. Throws on failure rather than
+     * swallowing it: AvfEngine.stop() needs to know whether the request was
+     * accepted, because a swallowed failure leaves a live VM with a nulled
+     * handle (unkillable). Callers wrap in runCatching where they want to react.
+     */
+    fun stop(vm: Any) { invokeDecl(vm, "stop") }
 
     /**
      * Opens a vsock connection from the host (Android) to a port the guest is
@@ -378,14 +390,17 @@ object AvfReflect {
     fun connectVsock(vm: Any, port: Long): android.os.ParcelFileDescriptor {
         val m = vm.javaClass.getDeclaredMethod("connectVsock", Long::class.javaPrimitiveType!!)
             .apply { isAccessible = true }
-        return m.invoke(vm, port) as android.os.ParcelFileDescriptor
+        return m.invoke(vm, port) as? android.os.ParcelFileDescriptor
+            ?: error("connectVsock($port) returned null")
     }
 
     fun consoleOutput(vm: Any): java.io.InputStream =
-        invokeDecl(vm, "getConsoleOutput") as java.io.InputStream
+        invokeDecl(vm, "getConsoleOutput") as? java.io.InputStream
+            ?: error("getConsoleOutput returned null/non-stream")
 
     fun consoleInput(vm: Any): java.io.OutputStream =
-        invokeDecl(vm, "getConsoleInput") as java.io.OutputStream
+        invokeDecl(vm, "getConsoleInput") as? java.io.OutputStream
+            ?: error("getConsoleInput returned null/non-stream")
 
     private fun invokeDecl(target: Any, name: String, vararg typedArgs: Pair<Class<*>, Any?>): Any? {
         val argTypes = typedArgs.map { it.first }.toTypedArray()

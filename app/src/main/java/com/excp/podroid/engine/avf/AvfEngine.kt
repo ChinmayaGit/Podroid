@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -52,6 +53,11 @@ class AvfEngine @Inject constructor(
         // "podroid-avf-smoke" — a different name — so there is no config
         // conflict between the two paths.
         private const val VM_NAME = "podroid"
+        // Mirrors QemuEngine's 60s boot-timeout fallback so a guest that never
+        // emits "Ready!" (a console quirk, a lost marker, no onStopped/onDied)
+        // doesn't strand the engine in Starting forever — EngineHolder.trySwap
+        // waits on a terminal state, so a stuck Starting blocks backend switch.
+        private const val BOOT_TIMEOUT_MS = 60_000L
     }
 
     private val _state = MutableStateFlow<VmState>(VmState.Idle)
@@ -97,6 +103,25 @@ class AvfEngine @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var vmHandle: Any? = null
+    /**
+     * Monotonic per-start token. Captured in each VM's callback closures so a
+     * late callback from a PREVIOUS VM (callbacks run on ForkJoinPool, so a fast
+     * Stop → Start can leave the old VM's events in flight) can't clobber the new
+     * VM's state. QemuEngine funnels all state through one exit thread for the
+     * same reason; AVF has no single exit thread, so a generation token guards it.
+     */
+    @Volatile private var vmGeneration: Long = 0
+    /**
+     * Set by stop() before signalling the framework so a subsequent
+     * onError/onStopped/onDied is treated as the expected consequence of a
+     * user-initiated stop and never downgrades a clean Stopped to Error.
+     */
+    @Volatile private var stopRequested = false
+    /** Runs cleanup() exactly once per VM lifetime (every terminal path routes through it). */
+    private val cleanedUp = AtomicBoolean(true)
+    /** Guards the StringBuilder mutated on the fanout pump thread vs cleared in start(). */
+    private val consoleLock = Any()
+    private var bootTimeoutJob: kotlinx.coroutines.Job? = null
     private var consoleStream: java.io.InputStream? = null
     private var consoleStreamInput: java.io.OutputStream? = null
     private var fanout: ConsoleFanout? = null
@@ -121,6 +146,10 @@ class AvfEngine @Inject constructor(
     private val forwarders = java.util.concurrent.ConcurrentHashMap<Int, VsockPortForwarder>()
     @Volatile private var lastSentRows = -1
     @Volatile private var lastSentCols = -1
+
+    /** Backend-specific diagnostics for the export log (observational only). */
+    @Volatile private var lastLifecycleEvent: String = "(no lifecycle callback yet)"
+    @Volatile private var launchConfigSummary: String = "(VM not started this session)"
     private var resizeDebounceJob: kotlinx.coroutines.Job? = null
 
     val terminalSockPath: String get() = "${context.filesDir.absolutePath}/avf-terminal.sock"
@@ -140,26 +169,47 @@ class AvfEngine @Inject constructor(
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             runCatching { terminalSession?.emulator?.append(reset, reset.size) }
         }
-        // Bring up the vsock control channel. EngineHolder's diff loop fires
-        // on state → Running and dispatches DataStore rules; we replay the
-        // initialRules here too because PodroidService auto-injects SSH/X11/
-        // audio rules in-memory (never in DataStore) and EngineHolder never
-        // sees them. addPortForward's putIfAbsent dedups the parallel path.
-        val vm = vmHandle
-        if (vm != null) {
-            val ctl = VsockControlChannel(vm, scope)
-            control = ctl
-            ctl.open()
-            scope.launch {
-                for (rule in initialRules) addPortForward(rule)
-            }
+        bringUpControlChannel()
+    }
+
+    /**
+     * Bring up the vsock control channel and replay the initial port-forward
+     * rules. EngineHolder's diff loop fires on state → Running and dispatches
+     * DataStore rules; we replay the initialRules here too because PodroidService
+     * auto-injects SSH/X11/audio rules in-memory (never in DataStore) and
+     * EngineHolder never sees them. addPortForward's putIfAbsent dedups the
+     * parallel path. Idempotent (guarded on a null `control`) so the detector's
+     * onReady and the boot-timeout fallback can't both open a second channel.
+     */
+    @Synchronized
+    private fun bringUpControlChannel() {
+        if (control != null) return
+        val vm = vmHandle ?: return
+        val ctl = VsockControlChannel(vm, scope)
+        // Assign `control` BEFORE replaying initialRules so each replayed
+        // addPortForward sees a non-null channel and its ADD lands (the channel
+        // buffers commands internally until the guest agent connects). A
+        // DataStore rule that raced in ahead of this still has its host listener
+        // bound; addPortForward logs a one-time warning for that narrow window.
+        control = ctl
+        ctl.open()
+        scope.launch {
+            for (rule in initialRules) addPortForward(rule)
         }
     }
 
     override suspend fun start(portForwards: List<PortForwardRule>, config: VmConfig) {
         if (_state.value is VmState.Running || _state.value is VmState.Starting) return
+        // New VM lifetime: bump the generation so any in-flight callback from a
+        // prior VM is ignored, clear the user-stop flag, and arm cleanup() to run
+        // once on this run's first terminal transition.
+        val generation = ++vmGeneration
+        stopRequested = false
+        cleanedUp.set(false)
         // Reset console capture from any prior run before we start emitting.
-        consoleBuilder.clear()
+        // Guarded against the prior run's fanout pump still appending (a fast
+        // Stop → Start can leave the old vm→bridge pump alive a moment).
+        synchronized(consoleLock) { consoleBuilder.clear() }
         _consoleText.value = ""
         initialRules.clear()
         initialRules.addAll(portForwards.filter { it.protocol == "tcp" })
@@ -198,22 +248,40 @@ class AvfEngine @Inject constructor(
             val cb = AvfReflect.newVmCallback(
                 onError = { code, msg ->
                     Log.e(TAG, "VM onError ${AvfReasonCodes.errorCode(code)} msg=$msg")
-                    _state.value = VmState.Error(
+                    lastLifecycleEvent = "onError(${AvfReasonCodes.errorCode(code)}) msg=${msg ?: "no message"}"
+                    // Funnel respects terminal states (won't clobber a user Stop)
+                    // and the generation token (ignores a prior VM's late error).
+                    onVmTerminal(generation, VmState.Error(
                         "AVF onError(${AvfReasonCodes.errorCode(code)}): ${msg ?: "no message"}"
-                    )
+                    ))
                 },
                 onStopped = { reason ->
                     Log.i(TAG, "VM onStopped ${AvfReasonCodes.stopReason(reason)}")
-                    if (_state.value is VmState.Running) {
-                        _state.value = VmState.Stopped
-                    } else if (_state.value is VmState.Starting) {
-                        _state.value = VmState.Error(
-                            "VM exited during boot (${AvfReasonCodes.stopReason(reason)})"
-                        )
+                    lastLifecycleEvent = "onStopped(${AvfReasonCodes.stopReason(reason)})"
+                    // A stop while still Starting means the VM exited during boot;
+                    // otherwise it's a clean stop. The funnel maps a user-stop to
+                    // Stopped regardless and ignores stale/terminal transitions.
+                    val target = if (_state.value is VmState.Starting && !stopRequested) {
+                        VmState.Error("VM exited during boot (${AvfReasonCodes.stopReason(reason)})")
+                    } else {
+                        VmState.Stopped
                     }
+                    onVmTerminal(generation, target)
                 },
                 onDied = { reason ->
+                    // onDied fires on backend-level death (virtmgr/crosvm), often
+                    // with no preceding onStopped. Previously it only logged, so a
+                    // death while Starting stranded the engine in Starting forever
+                    // (UI stuck, EngineHolder.trySwap never released). Drive a
+                    // terminal transition + cleanup through the same funnel.
                     Log.w(TAG, "VM onDied ${AvfReasonCodes.stopReason(reason)}")
+                    lastLifecycleEvent = "onDied(${AvfReasonCodes.stopReason(reason)})"
+                    val target = if (stopRequested) {
+                        VmState.Stopped
+                    } else {
+                        VmState.Error("VM died (${AvfReasonCodes.stopReason(reason)})")
+                    }
+                    onVmTerminal(generation, target)
                 },
             )
             AvfReflect.setCallback(vm, java.util.concurrent.ForkJoinPool.commonPool(), cb)
@@ -237,7 +305,8 @@ class AvfEngine @Inject constructor(
             // Fan out: VM ↔ filesystem socket. The bridge subprocess connects to
             // that socket and splices PTY ↔ socket. BootStageDetector tees the
             // VM output to drive boot-stage + state transitions; onVmBytes tees
-            // the same bytes to console.log + the consoleText flow.
+            // the boot-phase bytes (Starting only — see the privacy note there)
+            // to console.log + the consoleText flow.
             val fo = ConsoleFanout(
                 consoleOutput = inStream,
                 consoleInput = outStream,
@@ -245,18 +314,33 @@ class AvfEngine @Inject constructor(
                 detector = detector,
                 scope = scope,
                 onVmBytes = { buf, n ->
-                    runCatching {
-                        log?.write(buf, 0, n)
-                        log?.flush()
+                    // PRIVACY: on AVF the console rides hvc0 — the SAME device as the
+                    // interactive getty/shell — so persist to console.log ONLY while
+                    // booting. Once the VM is Running, hvc0 carries everything the user
+                    // types and sees (login, shell I/O, file contents); writing that to
+                    // console.log would leak the whole session into the exportable
+                    // diagnostic log. Boot output (incl. boot-time kernel panics like
+                    // issue #29) is still captured; a later death's reason still lands
+                    // via the onStopped/onDied callbacks.
+                    if (_state.value is VmState.Starting) {
+                        runCatching {
+                            log?.write(buf, 0, n)
+                            log?.flush()
+                        }
+                        // UTF-8 decode best-effort (split multi-byte sequences may
+                        // surface as U+FFFD here — acceptable for the diagnostic
+                        // tail; the raw bytes hit disk faithfully above).
+                        // Guard the StringBuilder: this runs on the fanout pump thread
+                        // while start() may clear it on another (fast Stop → Start).
+                        val snapshot = synchronized(consoleLock) {
+                            consoleBuilder.append(String(buf, 0, n, Charsets.UTF_8))
+                            if (consoleBuilder.length > maxConsoleSize) {
+                                consoleBuilder.delete(0, consoleBuilder.length - maxConsoleSize)
+                            }
+                            consoleBuilder.toString()
+                        }
+                        _consoleText.value = snapshot
                     }
-                    // UTF-8 decode best-effort (split multi-byte sequences may
-                    // surface as U+FFFD here — acceptable for the diagnostic
-                    // tail; the raw bytes hit disk faithfully above).
-                    consoleBuilder.append(String(buf, 0, n, Charsets.UTF_8))
-                    if (consoleBuilder.length > maxConsoleSize) {
-                        consoleBuilder.delete(0, consoleBuilder.length - maxConsoleSize)
-                    }
-                    _consoleText.value = consoleBuilder.toString()
                 },
             )
             fanout = fo
@@ -266,6 +350,24 @@ class AvfEngine @Inject constructor(
             val status = runCatching { AvfReflect.getStatus(vm) }.getOrDefault(-1)
             Log.i(TAG, "vm.run() returned — VM booting (status=$status)")
             spawnBridge()
+
+            // Boot-timeout fallback (mirrors QemuEngine): the engine leaves
+            // Starting only via the detector's "Ready!" or a VM callback. If a
+            // console quirk or a lost marker keeps both from firing, promote a
+            // still-Starting VM of THIS generation to Running and bring up the
+            // control channel (idempotent) so EngineHolder.trySwap can release
+            // and the bridge is wired. The generation/cleanedUp guard prevents
+            // promoting a VM that already stopped in the delay window.
+            bootTimeoutJob = scope.launch {
+                kotlinx.coroutines.delay(BOOT_TIMEOUT_MS)
+                if (generation == vmGeneration && !cleanedUp.get() &&
+                    _state.value is VmState.Starting) {
+                    Log.w(TAG, "AVF boot timeout — forcing Running state")
+                    _bootStage.value = "Ready"
+                    _state.value = VmState.Running
+                    bringUpControlChannel()
+                }
+            }
         } catch (e: Throwable) {
             val cause = e.cause ?: e
             Log.e(TAG, "AVF start failed", cause)
@@ -305,9 +407,35 @@ class AvfEngine @Inject constructor(
     }
 
     override fun stop() {
-        vmHandle?.let { AvfReflect.stop(it) }
-        _state.value = VmState.Stopped
-        cleanup()
+        val vm = vmHandle
+        if (vm == null) {
+            // Nothing running (or already torn down). Make sure state is terminal
+            // so EngineHolder.trySwap can release, then run the idempotent cleanup.
+            onVmTerminal(vmGeneration, VmState.Stopped)
+            return
+        }
+        // Mark the stop as user-initiated so a resulting onStopped/onDied/onError
+        // is mapped to Stopped (never downgraded to Error) by the funnel.
+        stopRequested = true
+        val generation = vmGeneration
+        // Surface (don't swallow) a framework stop() failure: if the request was
+        // rejected the VM is still alive, and we must NOT null the handle (cleanup
+        // nulls it) or we'd leak an unkillable VM. Retain the handle so the
+        // watchdog below can retry / so a later stop() can act on it.
+        val requested = runCatching { AvfReflect.stop(vm) }
+            .onFailure { Log.w(TAG, "AVF stop() request failed; VM may still be running", it) }
+            .isSuccess
+        // Drive the final Stopped + cleanup from the onStopped/onDied callback so
+        // we don't tear down a still-live VM. If the framework never delivers a
+        // terminal callback (or stop() was rejected), a bounded watchdog forces
+        // the transition so the engine never strands in Running/Starting.
+        scope.launch {
+            kotlinx.coroutines.delay(if (requested) 5_000L else 1_000L)
+            if (generation == vmGeneration && !cleanedUp.get()) {
+                Log.w(TAG, "AVF stop: no terminal callback within timeout — forcing Stopped")
+                onVmTerminal(generation, VmState.Stopped)
+            }
+        }
     }
 
     override suspend fun addPortForward(rule: com.excp.podroid.data.repository.PortForwardRule) {
@@ -345,7 +473,21 @@ class AvfEngine @Inject constructor(
                 return
             }
             fw.start()
-            control?.addForward(rule.hostPort, "127.0.0.1", rule.guestPort)
+            val ctl = control
+            if (ctl != null) {
+                ctl.addForward(rule.hostPort, "127.0.0.1", rule.guestPort)
+            } else {
+                // EngineHolder's diff loop can call addPortForward the instant
+                // state flips to Running, a hair before bringUpControlChannel
+                // sets `control`. The host listener is already bound; the guest
+                // ADD is what's at risk here. Surface it rather than dropping
+                // silently. The auto-injected rules are replayed by
+                // bringUpControlChannel (which sets `control` before the replay,
+                // so their ADDs land); a DataStore rule that lands in this narrow
+                // window is re-dispatched by EngineHolder on the next sync.
+                Log.w(TAG, "addPortForward(${rule.hostPort}): control channel not up yet; " +
+                    "guest ADD skipped (host listener is bound)")
+            }
             Log.i(TAG, "live forward up: 0.0.0.0:${rule.hostPort} → vsock:${rule.hostPort} → 127.0.0.1:${rule.guestPort}")
         } catch (e: Throwable) {
             // If we got past putIfAbsent before the throw, remove ourselves so
@@ -408,7 +550,35 @@ class AvfEngine @Inject constructor(
         return sess
     }
 
+    /**
+     * Single synchronized funnel for the VM lifecycle callbacks (onError /
+     * onStopped / onDied), which fire on ForkJoinPool threads and can interleave.
+     * Drops events from a stale generation, never overwrites a terminal state
+     * (Stopped/Error/Idle), suppresses an Error downgrade of a user-initiated
+     * Stopped, and runs cleanup() once on the first terminal transition. A
+     * successful start/run never calls this (only the detector flips to Running).
+     */
+    @Synchronized
+    private fun onVmTerminal(generation: Long, newState: VmState) {
+        if (generation != vmGeneration) {
+            Log.d(TAG, "ignoring stale VM callback (gen $generation != current $vmGeneration)")
+            return
+        }
+        val current = _state.value
+        if (current is VmState.Stopped || current is VmState.Idle || current is VmState.Error) {
+            // Already terminal; don't let a trailing onError clobber a clean stop.
+            return
+        }
+        // A user-initiated stop already decided the outcome is Stopped; a late
+        // framework Error/exit for that same teardown must not downgrade it.
+        _state.value = if (stopRequested) VmState.Stopped else newState
+        cleanup()
+    }
+
     private fun cleanup() {
+        if (cleanedUp.getAndSet(true)) return
+        bootTimeoutJob?.cancel()
+        bootTimeoutJob = null
         // Tear down forwarders + control before draining the fanout so the
         // VM doesn't see late vsock connect attempts after onStopped.
         forwarders.values.forEach { runCatching { it.close() } }
@@ -419,12 +589,22 @@ class AvfEngine @Inject constructor(
         resizeDebounceJob = null
         runCatching { control?.close() }
         control = null
-        // Close fanout next — drains its coroutines and closes the streams inside.
-        runCatching { fanout?.close() }
+        // Close fanout next — drains its coroutines AND closes the console
+        // streams (it is their single owner). We hold the same references only
+        // to hand them to the fanout; closing them here too would double-close
+        // the ParcelFileDescriptor-backed streams from another thread (FD-reuse
+        // hazard). Only if the fanout was never constructed (an early start()
+        // failure between obtaining the streams and building the fanout) do we
+        // close them directly so they don't leak.
+        val fo = fanout
+        if (fo != null) {
+            runCatching { fo.close() }
+        } else {
+            runCatching { consoleStreamInput?.close() }
+            runCatching { consoleStream?.close() }
+        }
         fanout = null
-        runCatching { consoleStreamInput?.close() }
         consoleStreamInput = null
-        runCatching { consoleStream?.close() }
         consoleStream = null
         // Flush + close console.log; the tail stays on disk for the next
         // diagnostic export. consoleText flow keeps its last value (UI reads
@@ -491,6 +671,11 @@ class AvfEngine @Inject constructor(
         return raw
     }
 
+    override fun diagnosticsReport(): String = buildString {
+        appendLine("backend launch config: $launchConfigSummary")
+        appendLine("last VM lifecycle callback: $lastLifecycleEvent")
+    }
+
     private fun buildConfig(mgr: Any, config: VmConfig): Any {
         val kernelSrc = File(context.filesDir, "vmlinuz-virt").also {
             require(it.exists()) { "kernel missing at ${it.absolutePath}" }
@@ -538,6 +723,7 @@ class AvfEngine @Inject constructor(
         }
         AvfReflect.addDisk(cb, storage.absolutePath, writable = true)
         AvfReflect.addDisk(cb, squashfs.absolutePath, writable = false)
+        var shareSummary = if (config.storageAccessEnabled) "enabled" else "off"
         if (config.storageAccessEnabled) {
             val downloads = android.os.Environment.getExternalStoragePublicDirectory(
                 android.os.Environment.DIRECTORY_DOWNLOADS
@@ -570,20 +756,29 @@ class AvfEngine @Inject constructor(
             }.getOrElse { e ->
                 Log.w(TAG, "addSharedPath threw (continuing without share)", e); false
             }
-            if (ok) Log.i(TAG, "downloads share added: $downloads")
-            else Log.i(TAG, "downloads share NOT added — Settings toggle is a no-op on this AVF revision")
+            if (ok) {
+                shareSummary = "added"
+                Log.i(TAG, "downloads share added: $downloads")
+            } else {
+                shareSummary = "no-op (unsupported on this AVF revision)"
+                Log.i(TAG, "downloads share NOT added — Settings toggle is a no-op on this AVF revision")
+            }
         }
         AvfReflect.setNetworkSupported(cb, true)
         val customCfg = AvfReflect.build(cb)
 
         val vb = AvfReflect.newVmConfigBuilder(context)
-        when (val choice = AvfReflect.applyProtectedVm(mgr, vb)) {
+        val protectedStr = when (val choice = AvfReflect.applyProtectedVm(mgr, vb)) {
             is AvfCapabilities.ProtectedVmChoice.Unsupported ->
                 throw UnsupportedOperationException(choice.reason)
-            is AvfCapabilities.ProtectedVmChoice.NonProtected ->
+            is AvfCapabilities.ProtectedVmChoice.NonProtected -> {
                 Log.i(TAG, "protectedVm=false (device supports non-protected VMs)")
-            is AvfCapabilities.ProtectedVmChoice.Unknown ->
+                "false (non-protected supported)"
+            }
+            is AvfCapabilities.ProtectedVmChoice.Unknown -> {
                 Log.w(TAG, "getCapabilities() unavailable; attempted protectedVm=false")
+                "false (capabilities unknown)"
+            }
         }
         AvfReflect.setMemoryBytes(vb, config.ramMb.toLong() * 1024 * 1024)
         AvfReflect.setNumCpus(vb, config.cpus)
@@ -593,6 +788,8 @@ class AvfEngine @Inject constructor(
         AvfReflect.setVmOutputCaptured(vb, true)
         AvfReflect.setVmConsoleInputSupported(vb, true)
         AvfReflect.setCustomImageConfig(vb, customCfg)
+        launchConfigSummary = "vCPUs=${config.cpus}, memory=${config.ramMb}MB, console=hvc0, " +
+            "protectedVm=$protectedStr, downloadsShare=$shareSummary, verboseLogging=${config.verboseLogging}"
         return AvfReflect.build(vb)
     }
 }

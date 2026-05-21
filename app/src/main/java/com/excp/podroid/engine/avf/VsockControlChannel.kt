@@ -34,12 +34,22 @@ class VsockControlChannel(
     companion object {
         const val CTL_PORT: Long = 9100L
         private const val TAG = "VsockControlChannel"
+        private const val MAX_ATTEMPTS = 30
+        // Cap the pre-connect queue. Without a cap, every RESIZE (a keyboard
+        // slide fires ~25) appended forever once the connect gave up — an
+        // unbounded leak that also replayed stale resizes if a connect
+        // eventually succeeded. RESIZE is coalesced (only the latest matters),
+        // so the cap mainly bounds ADD/REMOVE churn before first connect.
+        private const val MAX_PENDING = 64
     }
 
     private var pfd: ParcelFileDescriptor? = null
     private var writer: PrintWriter? = null
     private var connectJob: Job? = null
     @Volatile private var closed = false
+    /** Set once the retry loop exhausts; further sends are dropped, not queued. */
+    private var gaveUp = false
+    private var warnedUnavailable = false
 
     /**
      * Commands written before the agent connection is established. Drained
@@ -58,7 +68,7 @@ class VsockControlChannel(
     fun open() {
         connectJob = scope.launch(Dispatchers.IO) {
             var attempt = 0
-            while (!closed && attempt < 30) {
+            while (!closed && attempt < MAX_ATTEMPTS) {
                 val ok = runCatching {
                     val p = AvfReflect.connectVsock(vm, CTL_PORT)
                     val w = PrintWriter(ParcelFileDescriptor.AutoCloseOutputStream(p), /* autoFlush */ true)
@@ -80,17 +90,37 @@ class VsockControlChannel(
                 attempt += 1
                 kotlinx.coroutines.delay(500)
             }
+            // Connect never succeeded: stop queueing so later sends don't grow
+            // `pending` without bound. Drop the buffer; it can never be drained.
+            synchronized(this@VsockControlChannel) {
+                gaveUp = true
+                pending.clear()
+            }
             Log.w(TAG, "control channel: gave up after $attempt attempts")
         }
     }
 
     @Synchronized private fun sendOrQueue(line: String) {
         val w = writer
-        if (w != null) {
-            runCatching { w.println(line) }
+        when {
+            w != null -> runCatching { w.println(line) }
                 .onFailure { Log.w(TAG, "send failed: $line", it) }
-        } else if (!closed) {
-            pending.add(line)
+            closed || gaveUp -> {
+                // Channel will never connect (gave up) or is shutting down:
+                // drop with a single warning instead of growing `pending`.
+                if (gaveUp && !warnedUnavailable) {
+                    warnedUnavailable = true
+                    Log.w(TAG, "control channel unavailable; dropping commands (first: $line)")
+                }
+            }
+            // Coalesce RESIZE: only the most recent geometry matters, so replace
+            // any queued RESIZE rather than appending a new one per slide event.
+            line.startsWith("RESIZE ") -> {
+                pending.removeAll { it.startsWith("RESIZE ") }
+                pending.add(line)
+            }
+            pending.size >= MAX_PENDING -> Log.w(TAG, "pending queue full ($MAX_PENDING); dropping: $line")
+            else -> pending.add(line)
         }
     }
 
