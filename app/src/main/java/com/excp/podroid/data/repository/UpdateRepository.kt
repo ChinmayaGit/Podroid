@@ -2,10 +2,12 @@ package com.excp.podroid.data.repository
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -116,15 +118,18 @@ class UpdateRepository @Inject constructor(
     suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
         // Wall-clock time so the 24h gate survives device reboots and deep sleep.
         val now = System.currentTimeMillis()
-        val lastCheck = context.dataStore.data.first()[lastCheckKey] ?: 0L
-
-        if (!shouldCheck(now, lastCheck, cacheValidityMs)) {
-            return@withContext null
-        }
-
-        val connection = URL("https://api.github.com/repos/ExTV/Podroid/releases/latest")
-            .openConnection() as java.net.HttpURLConnection
+        var connection: java.net.HttpURLConnection? = null
         try {
+            val lastCheck = context.dataStore.data
+                .catch { e -> if (e is java.io.IOException) emit(emptyPreferences()) else throw e }
+                .first()[lastCheckKey] ?: 0L
+
+            if (!shouldCheck(now, lastCheck, cacheValidityMs)) {
+                return@withContext null
+            }
+
+            connection = URL("https://api.github.com/repos/ExTV/Podroid/releases/latest")
+                .openConnection() as java.net.HttpURLConnection
             connection.connectTimeout = 5000
             connection.readTimeout = 5000
             connection.setRequestProperty("Accept", "application/vnd.github+json")
@@ -155,11 +160,11 @@ class UpdateRepository @Inject constructor(
             val normalizedCurrent = currentVersion.removeSuffix("-debug")
             if (isNewer(tag, normalizedCurrent)) UpdateInfo(tag, url) else null
         } catch (_: Exception) {
-            // Network error: still record the timestamp to back off on the next launch.
+            // Network/DataStore error: still record the timestamp to back off on the next launch.
             runCatching { context.dataStore.edit { it[lastCheckKey] = now } }
             null
         } finally {
-            connection.disconnect()
+            connection?.disconnect()
         }
     }
 
