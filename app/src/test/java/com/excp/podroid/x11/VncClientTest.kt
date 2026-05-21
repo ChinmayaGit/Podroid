@@ -94,6 +94,69 @@ class VncClientTest {
         assertEquals(7, ((b[8].toInt() and 0xFF) shl 24) or ((b[9].toInt() and 0xFF) shl 16) or ((b[10].toInt() and 0xFF) shl 8) or (b[11].toInt() and 0xFF))
     }
 
+    @Test(expected = java.io.IOException::class)
+    fun `Raw rectangle exceeding framebuffer bounds throws IOException`() {
+        // FramebufferUpdate with a Raw rect at x=0,y=0,w=4,h=1 into a 2-pixel
+        // buffer (stride=2). w*h = 4 pixels would overrun the 2-element array →
+        // must raise IOException (bounds guard), not ArrayIndexOutOfBoundsException.
+        val msg = byteArrayOf(
+            0x00, 0x00,             // msg-type, padding
+            0x00, 0x01,             // num rects
+            0x00, 0x00, 0x00, 0x00, // x=0, y=0
+            0x00, 0x04, 0x00, 0x01, // w=4, h=1  (exceeds the 2-pixel buffer)
+            0x00, 0x00, 0x00, 0x00, // encoding = 0 (Raw)
+            // 4 BGRA pixels of payload so the OOB write is actually reached
+            // (without payload, readFully would EOF before any array access).
+            0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,
+        )
+        VncClient.readFramebufferUpdate(
+            inp = java.io.ByteArrayInputStream(msg),
+            targetArgb = IntArray(2),
+            stride = 2,
+            zrle = ZrleDecoder(),
+        )
+    }
+
+    @Test(expected = java.io.IOException::class)
+    fun `CopyRect with out-of-bounds source throws IOException`() {
+        // CopyRect dst x=0,y=0,w=2,h=1 into a 2-pixel buffer; source srcX=10
+        // is out of range. Must raise IOException, not IndexOutOfBoundsException.
+        val msg = byteArrayOf(
+            0x00, 0x00,             // msg-type, padding
+            0x00, 0x01,             // num rects
+            0x00, 0x00, 0x00, 0x00, // x=0, y=0
+            0x00, 0x02, 0x00, 0x01, // w=2, h=1
+            0x00, 0x00, 0x00, 0x01, // encoding = 1 (CopyRect)
+            0x00, 0x0A, 0x00, 0x00, // srcX=10, srcY=0  (out of bounds)
+        )
+        VncClient.readFramebufferUpdate(
+            inp = java.io.ByteArrayInputStream(msg),
+            targetArgb = IntArray(2),
+            stride = 2,
+            zrle = ZrleDecoder(),
+        )
+    }
+
+    @Test(expected = Exception::class)
+    fun `ServerInit with absurd name length is rejected without OOM`() {
+        // Up through ServerInit, then nameLen = 0x7FFFFFFF. Must throw (require/
+        // IOException) before allocating ByteArray(nameLen) — no OutOfMemoryError.
+        val serverBytes = byteArrayOf(
+            'R'.code.toByte(), 'F'.code.toByte(), 'B'.code.toByte(), ' '.code.toByte(),
+            '0'.code.toByte(), '0'.code.toByte(), '3'.code.toByte(), '.'.code.toByte(),
+            '0'.code.toByte(), '0'.code.toByte(), '8'.code.toByte(), '\n'.code.toByte(),
+            0x01, 0x01,                                         // sec types: count=1, None
+            0x00, 0x00, 0x00, 0x00,                             // SecurityResult OK
+            0x05, 0x00, 0x02, 0xD0.toByte(),                    // width 1280, height 720
+            32, 24, 0, 1,                                       // pixel format (16 bytes)
+            0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(), 0x00, 0xFF.toByte(),
+            16, 8, 0,
+            0, 0, 0,
+            0x7F, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(),  // nameLen = 0x7FFFFFFF
+        )
+        VncClient.handshake(java.io.ByteArrayInputStream(serverBytes), java.io.ByteArrayOutputStream())
+    }
+
     @Test fun `ExtendedDesktopSize rect reports new size and writes no pixels`() {
         // FramebufferUpdate: type=0, pad, numRects=1; rect x=0 y=0 w=800 h=600 enc=-308;
         // body: screens=1 pad[3]; screen{id=1,x=0,y=0,w=800,h=600,flags=0}

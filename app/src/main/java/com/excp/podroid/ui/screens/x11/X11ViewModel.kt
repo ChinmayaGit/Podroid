@@ -64,6 +64,8 @@ class X11ViewModel @Inject constructor(
     @Volatile private var fbW = X11Constants.FB_WIDTH
     @Volatile private var fbH = X11Constants.FB_HEIGHT
     @Volatile var framebuffer: IntArray = IntArray(fbW * fbH); private set
+    // Dedicated lock object so synchronized() is never on the reassigned framebuffer field.
+    val fbLock = Any()
     @Volatile private var scratch: IntArray = IntArray(fbW * fbH)
     private val zrle = ZrleDecoder()
     @Volatile private var screenId = 0
@@ -100,7 +102,7 @@ class X11ViewModel @Inject constructor(
                             if (ns.w != fbW || ns.h != fbH) {
                                 fbW = ns.w; fbH = ns.h
                                 val fresh = IntArray(fbW * fbH)
-                                synchronized(framebuffer) { framebuffer = fresh }
+                                synchronized(fbLock) { framebuffer = fresh }
                                 scratch = IntArray(fbW * fbH)
                                 _fbSize.value = ns
                                 cursor.value = android.graphics.Point(fbW / 2, fbH / 2)
@@ -108,7 +110,7 @@ class X11ViewModel @Inject constructor(
                                 return@let
                             }
                         }
-                        synchronized(framebuffer) {
+                        synchronized(fbLock) {
                             System.arraycopy(scratch, 0, framebuffer, 0, framebuffer.size)
                             lastDamage = upd.damage
                         }
@@ -129,6 +131,7 @@ class X11ViewModel @Inject constructor(
     }
 
     fun disconnect() {
+        heldButtons = 0
         sessionJob?.cancel()
         sessionJob = null
     }
@@ -219,12 +222,15 @@ class X11ViewModel @Inject constructor(
     fun press(button: Int) { heldButtons = heldButtons or button; sendPointer(cursor.value.x, cursor.value.y, heldButtons) }
     fun release(button: Int) { heldButtons = heldButtons and button.inv(); sendPointer(cursor.value.x, cursor.value.y, heldButtons) }
     fun click(button: Int) { press(button); release(button) }
-    /** Physical-mouse update: absolute position + the full button mask in one event. */
+    /** Physical-mouse update: absolute position + the full button mask in one event.
+     *  Mouse is authoritative for the button mask (mask=0 on release must clear bits).
+     *  A simultaneous touch drag-lock + physical mouse is a rare mixed-input edge left
+     *  as-is; OR-ing the mask here would make mouse buttons un-releasable. */
     fun mouseUpdate(x: Int, y: Int, mask: Int) {
         val nx = x.coerceIn(0, fbW - 1); val ny = y.coerceIn(0, fbH - 1)
         cursor.value = android.graphics.Point(nx, ny)
         heldButtons = mask
-        sendPointer(nx, ny, mask)
+        sendPointer(nx, ny, heldButtons)
     }
     fun scroll(up: Boolean, ticks: Int = 1) { val b = if (up) VncClient.BTN_WHEEL_UP else VncClient.BTN_WHEEL_DOWN; repeat(ticks) { sendPointer(cursor.value.x, cursor.value.y, heldButtons or b); sendPointer(cursor.value.x, cursor.value.y, heldButtons) } }
 

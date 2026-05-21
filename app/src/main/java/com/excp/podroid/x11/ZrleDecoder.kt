@@ -60,16 +60,14 @@ class ZrleDecoder {
         val compLen = din.readInt()
         if (compLen < 0 || compLen > 64 * 1024 * 1024) throw IOException("ZRLE: absurd compressed length $compLen")
 
-        // Feed the entire compressed block to the inflater.
-        var bytesLeft = compLen
-        while (bytesLeft > 0) {
-            val chunk = minOf(bytesLeft, inputScratch.size)
-            din.readFully(inputScratch, 0, chunk)
-            inflater.setInput(inputScratch, 0, chunk)
-            bytesLeft -= chunk
-            // Drain any output the inflater can produce now so its internal buffer stays free.
-            // We don't store it here; ZInput pulls on demand.
-        }
+        // Stream the compressed block on demand. setInput() does not copy/append —
+        // it holds inputScratch by reference and is consumed lazily by inflate(),
+        // so pre-loading multiple chunks into one buffer would drop all but the
+        // last. Instead ZInput.fill() reads the next chunk only once the inflater
+        // has consumed the previous one, bounded by `remaining` (this rect's
+        // compLen) so it never crosses the rect boundary.
+        remaining = compLen
+        inputStream = din
 
         // Wrap the inflater so tile-level code just calls readByte()/readBytes().
         val zi = ZInput(inflater)
@@ -131,6 +129,9 @@ class ZrleDecoder {
                         val idx = (accumByte ushr (8 - bitsPerIndex)) and ((1 shl bitsPerIndex) - 1)
                         accumByte = (accumByte shl bitsPerIndex) and 0xFF
                         bitsInAccum -= bitsPerIndex
+                        // bitsPerIndex rounds up, so the index space can exceed n
+                        // when n is not a power of two.
+                        if (idx >= n) throw IOException("ZRLE: packed palette index $idx >= $n")
                         target[base + col] = palette[idx]
                         col++
                     }
@@ -145,6 +146,7 @@ class ZrleDecoder {
                 while (filled < total) {
                     val color = zi.readCpixel()
                     val runLen = zi.readRunLength()
+                    if (filled + runLen > total) throw IOException("ZRLE: plain RLE run overruns tile ($filled+$runLen > $total)")
                     repeat(runLen) {
                         val pos = filled + it
                         val row = pos / tw; val col = pos % tw
@@ -163,14 +165,18 @@ class ZrleDecoder {
                     val indexByte = zi.readByte()
                     if (indexByte and 0x80 == 0) {
                         // Single pixel.
+                        if (indexByte >= n) throw IOException("ZRLE: palette RLE index $indexByte >= $n")
                         val pos = filled
                         val row = pos / tw; val col = pos % tw
                         target[(ty + row) * stride + (tx + col)] = palette[indexByte]
                         filled++
                     } else {
                         // Run of palette[index & 0x7F].
-                        val color = palette[indexByte and 0x7F]
+                        val idx = indexByte and 0x7F
+                        if (idx >= n) throw IOException("ZRLE: palette RLE index $idx >= $n")
+                        val color = palette[idx]
                         val runLen = zi.readRunLength()
+                        if (filled + runLen > total) throw IOException("ZRLE: palette RLE run overruns tile ($filled+$runLen > $total)")
                         repeat(runLen) {
                             val pos = filled + it
                             val row = pos / tw; val col = pos % tw
@@ -196,11 +202,23 @@ class ZrleDecoder {
         private fun fill() {
             while (avail == 0) {
                 if (inf.finished()) throw IOException("ZRLE: inflater finished early")
+                // Feed the next compressed chunk on demand, bounded by this rect's
+                // remaining budget. Each chunk is fully consumed before its buffer
+                // is reused, and we never read past compLen.
+                if (inf.needsInput() && remaining > 0) {
+                    val nIn = minOf(remaining, inputScratch.size)
+                    inputStream!!.readFully(inputScratch, 0, nIn)
+                    inf.setInput(inputScratch, 0, nIn)
+                    remaining -= nIn
+                }
                 val n = inf.inflate(buf)
                 if (n > 0) { pos = 0; avail = n }
                 // n == 0 with needsInput means all input was consumed; if finished() is false
                 // but no output and needsInput, the caller overfed or the stream is malformed.
                 else if (inf.needsInput()) throw IOException("ZRLE: inflater needs more input but none queued")
+                // n == 0, not finished, not needsInput → needsDictionary or a stuck
+                // stream: bail rather than spin forever.
+                else throw IOException("ZRLE: inflater made no progress")
             }
         }
 

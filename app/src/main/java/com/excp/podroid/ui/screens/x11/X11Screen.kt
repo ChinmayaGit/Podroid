@@ -55,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -69,6 +70,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.changedToDown
@@ -164,6 +166,11 @@ fun X11Screen(
     LaunchedEffect(Unit) { viewModel.connect() }
 
     val activity = LocalContext.current as? Activity
+    // Restore orientation when leaving; without this the lock persists onto
+    // terminal/home until process restart.
+    DisposableEffect(Unit) {
+        onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+    }
     LaunchedEffect(s.rotationLock) {
         activity?.requestedOrientation = when (s.rotationLock) {
             com.excp.podroid.x11.RotationLock.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -173,7 +180,10 @@ fun X11Screen(
     }
 
     val view = LocalView.current
-    var fullscreen by remember { mutableStateOf(s.fullscreenDefault) }
+    // Key on s.fullscreenDefault so the setting is picked up once DataStore
+    // delivers its first non-default emission; manual toggles still work because
+    // a toggle changes `fullscreen` without changing the key.
+    var fullscreen by remember(s.fullscreenDefault) { mutableStateOf(s.fullscreenDefault) }
     LaunchedEffect(fullscreen) {
         val window = activity?.window ?: return@LaunchedEffect
         val ctrl = WindowInsetsControllerCompat(window, view)
@@ -191,6 +201,12 @@ fun X11Screen(
     DisposableEffect(Unit) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
+    // Ensure disconnect + heldButtons reset on screen exit even if the ViewModel
+    // lives longer than this nav entry (onCleared would also call it, but that
+    // fires later; the immediate dispose prevents stuck buttons across navigation).
+    DisposableEffect(Unit) {
+        onDispose { viewModel.disconnect() }
     }
 
     // Back exits fullscreen first (no on-screen exit button); a second Back
@@ -274,8 +290,9 @@ fun X11Screen(
                 // pointer handler already sent it to X as button 3, so swallow
                 // the mouse-sourced Back (both down + up) to stop it exiting
                 // fullscreen. A real Back (gesture/keyboard) passes through to
-                // the BackHandler.
-                if (ev.key == Key.Back) {
+                // the BackHandler. Only intercept when fullscreen; in windowed
+                // mode Back should navigate out normally.
+                if (ev.key == Key.Back && fullscreen) {
                     return@onPreviewKeyEvent (native.source and android.view.InputDevice.SOURCE_MOUSE) ==
                         android.view.InputDevice.SOURCE_MOUSE
                 }
@@ -312,7 +329,9 @@ fun X11Screen(
                             (android.view.KeyEvent.META_SHIFT_ON or android.view.KeyEvent.META_CAPS_LOCK_ON)
                     )
                     if (cased == 0) return@onPreviewKeyEvent false
-                    keysym = cased
+                    // X keysyms 0x20-0x7E match ASCII verbatim; non-ASCII Unicode
+                    // maps to 0x01000000 | codepoint (X11 protocol extension).
+                    keysym = if (cased > 0x7E) 0x01000000 or cased else cased
                     shiftWrap = false
                 }
                 if (shiftWrap) viewModel.sendKey(XK_Shift_L, down = true)
@@ -393,16 +412,27 @@ fun X11Screen(
                 }
             }
             X11ConnectionState.Connected -> {
+                // rememberUpdatedState lets the pointerInput lambda always read the
+                // latest layout values without being in the key list, so a resize
+                // during an in-flight gesture updates coordinate mapping rather than
+                // cancelling the gesture coroutine mid-drag.
+                val currentDstX by rememberUpdatedState(dstX)
+                val currentDstY by rememberUpdatedState(dstY)
+                val currentDstW by rememberUpdatedState(dstW)
+                val currentDstH by rememberUpdatedState(dstH)
+                val currentFbW  by rememberUpdatedState(fb.w)
+                val currentFbH  by rememberUpdatedState(fb.h)
+
                 AndroidView(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .pointerInput(
-                            s.touchMode, dstX, dstY, dstW, dstH, fb.w, fb.h,
+                            s.touchMode,
                             s.trackpadSensitivity, s.trackpadAccel,
                         ) {
-                            fun fbX(px: Float) = ((px - dstX) / dstW.coerceAtLeast(1) * fb.w).toInt().coerceIn(0, fb.w - 1)
-                            fun fbY(py: Float) = ((py - dstY) / dstH.coerceAtLeast(1) * fb.h).toInt().coerceIn(0, fb.h - 1)
+                            fun fbX(px: Float) = ((px - currentDstX) / currentDstW.coerceAtLeast(1) * currentFbW).toInt().coerceIn(0, currentFbW - 1)
+                            fun fbY(py: Float) = ((py - currentDstY) / currentDstH.coerceAtLeast(1) * currentFbH).toInt().coerceIn(0, currentFbH - 1)
                             awaitPointerEventScope {
                                 while (true) {
                                     val event = awaitPointerEvent()
@@ -437,6 +467,9 @@ fun X11Screen(
                                     if (change.type != PointerType.Touch || !change.changedToDown()) continue
                                     viewerFocus.requestFocus()
                                     change.consume()
+                                    // Pin the primary pointer by ID so finger-order changes
+                                    // don't jump the cursor to a different finger.
+                                    val primaryId: PointerId = change.id
                                     val sx = change.position.x; val sy = change.position.y
                                     var lastX = sx; var lastY = sy
                                     var moved = 0f
@@ -465,7 +498,7 @@ fun X11Screen(
                                             val pressed = e.changes.filter { it.pressed }
                                             if (pressed.isEmpty()) { outcome = "tap"; return@withTimeoutOrNull Unit }
                                             if (pressed.size >= 2) { maxPointers = 2; outcome = "multi"; return@withTimeoutOrNull Unit }
-                                            val p = pressed.first().position
+                                            val p = (pressed.firstOrNull { it.id == primaryId } ?: pressed.first()).position
                                             if (abs(p.x - sx) + abs(p.y - sy) > 16f) {
                                                 lastX = p.x; lastY = p.y; outcome = "move"
                                                 e.changes.forEach { it.consume() }
@@ -482,36 +515,47 @@ fun X11Screen(
                                         continue
                                     }
 
-                                    while (true) {
-                                        val e = awaitPointerEvent()
-                                        val pressed = e.changes.filter { it.pressed }
-                                        maxPointers = maxOf(maxPointers, pressed.size)
-                                        if (pressed.isEmpty()) break
-                                        val p = pressed.first().position
-                                        val dx = p.x - lastX; val dy = p.y - lastY
-                                        moved += abs(dx) + abs(dy)
-                                        if (pressed.size >= 2) {
-                                            scrollAcc += dy
-                                            while (abs(scrollAcc) >= 60f) {
-                                                viewModel.scroll(scrollAcc < 0, 1)
-                                                scrollAcc += if (scrollAcc < 0) 60f else -60f
+                                    try {
+                                        while (true) {
+                                            val e = awaitPointerEvent()
+                                            val pressed = e.changes.filter { it.pressed }
+                                            maxPointers = maxOf(maxPointers, pressed.size)
+                                            if (pressed.isEmpty()) break
+                                            // Track the pinned primary pointer, falling back to
+                                            // first if it lifted (e.g. swapped fingers).
+                                            val p = (pressed.firstOrNull { it.id == primaryId } ?: pressed.first()).position
+                                            val dx = p.x - lastX; val dy = p.y - lastY
+                                            moved += abs(dx) + abs(dy)
+                                            if (pressed.size >= 2) {
+                                                // Transitioning 1→2 fingers: release left if held
+                                                // so we don't send a left+scroll chord.
+                                                if (leftHeld) { viewModel.release(VncClient.BTN_LEFT); leftHeld = false }
+                                                scrollAcc += dy
+                                                while (abs(scrollAcc) >= 60f) {
+                                                    viewModel.scroll(scrollAcc < 0, 1)
+                                                    scrollAcc += if (scrollAcc < 0) 60f else -60f
+                                                }
+                                            } else when (s.touchMode) {
+                                                TouchMode.DIRECT -> {
+                                                    viewModel.moveTo(fbX(p.x), fbY(p.y))
+                                                    if (!leftHeld) { viewModel.press(VncClient.BTN_LEFT); leftHeld = true }
+                                                }
+                                                TouchMode.TRACKPAD -> {
+                                                    val accel = if (s.trackpadAccel) (1f + (abs(dx) + abs(dy)) * 0.01f) else 1f
+                                                    val c = viewModel.cursor.value
+                                                    viewModel.moveTo(
+                                                        (c.x + dx * s.trackpadSensitivity * accel).toInt(),
+                                                        (c.y + dy * s.trackpadSensitivity * accel).toInt(),
+                                                    )
+                                                }
                                             }
-                                        } else when (s.touchMode) {
-                                            TouchMode.DIRECT -> {
-                                                viewModel.moveTo(fbX(p.x), fbY(p.y))
-                                                if (!leftHeld) { viewModel.press(VncClient.BTN_LEFT); leftHeld = true }
-                                            }
-                                            TouchMode.TRACKPAD -> {
-                                                val accel = if (s.trackpadAccel) (1f + (abs(dx) + abs(dy)) * 0.01f) else 1f
-                                                val c = viewModel.cursor.value
-                                                viewModel.moveTo(
-                                                    (c.x + dx * s.trackpadSensitivity * accel).toInt(),
-                                                    (c.y + dy * s.trackpadSensitivity * accel).toInt(),
-                                                )
-                                            }
+                                            lastX = p.x; lastY = p.y
+                                            e.changes.forEach { it.consume() }
                                         }
-                                        lastX = p.x; lastY = p.y
-                                        e.changes.forEach { it.consume() }
+                                    } finally {
+                                        // Release left button on cancellation (e.g. settings-change
+                                        // restarts the pointerInput coroutine mid-drag).
+                                        if (leftHeld && !dragLocked) { viewModel.release(VncClient.BTN_LEFT); leftHeld = false }
                                     }
 
                                     if (maxPointers >= 2) {
@@ -528,9 +572,17 @@ fun X11Screen(
                             holder.addCallback(object : SurfaceHolder.Callback {
                                 override fun surfaceCreated(h: SurfaceHolder) {}
                                 override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {
+                                    // Ignore height-only shrinks caused by the IME appearing;
+                                    // those don't require a desktop resize (only a layout reflow).
+                                    // Only send a resolution request when width changes or height
+                                    // grows (genuine surface resize, not just keyboard insets).
+                                    val widthChanged = w != svWidth
+                                    val heightGrew = hh > svHeight
                                     svWidth = w
                                     svHeight = hh
-                                    viewModel.requestResolution(w, hh)
+                                    if (widthChanged || heightGrew) {
+                                        viewModel.requestResolution(w, hh)
+                                    }
                                 }
                                 override fun surfaceDestroyed(h: SurfaceHolder) {}
                             })
@@ -541,9 +593,9 @@ fun X11Screen(
                         frameCount
                         // Lock the IntArray for the copy into Bitmap pixels so
                         // we never observe a half-written frame from the RFB
-                        // decoder thread (paired with synchronized(framebuffer)
+                        // decoder thread (paired with synchronized(fbLock)
                         // in X11ViewModel.connect).
-                        synchronized(viewModel.framebuffer) {
+                        synchronized(viewModel.fbLock) {
                             val src = viewModel.framebuffer
                             val bw = bitmap.width
                             val bh = bitmap.height
@@ -595,17 +647,25 @@ fun X11Screen(
                 BasicTextField(
                     value = imeBuf,
                     onValueChange = { new ->
-                        val added = if (new.text.length > imeBuf.text.length)
-                            new.text.substring(imeBuf.text.length) else ""
-                        if ((ctrlActive || altActive) && added.length == 1) {
+                        val old = imeBuf
+                        // Compute the added text based on the actual old buffer so
+                        // deletions (Backspace) are observable as shrinks. Do NOT
+                        // reset to empty before the diff — that's what killed Backspace.
+                        val addedText = if (new.text.length > old.text.length)
+                            new.text.substring(old.text.length) else ""
+                        if ((ctrlActive || altActive) && addedText.length == 1) {
                             // Combine the sticky CTRL/ALT with the typed character
                             // (e.g. tap CTRL then type L → Ctrl+L to clear the
                             // terminal). sendWithModifiers clears the one-shot after.
-                            sendWithModifiers(added[0].code)
+                            sendWithModifiers(addedText[0].code)
+                            // Reset buffer after ctrl/alt combo to keep it short.
+                            imeBuf = TextFieldValue("")
                         } else {
-                            forwardImeDiff(imeBuf.text, new.text, viewModel)
+                            forwardImeDiff(old.text, new.text, viewModel)
+                            // Keep the rolling buffer so future deletions are
+                            // observable, but cap it to avoid accumulating without bound.
+                            imeBuf = if (new.text.length > 128) TextFieldValue(new.text.takeLast(64)) else new
                         }
-                        imeBuf = TextFieldValue("")
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
@@ -685,6 +745,9 @@ private fun X11KeyButton(
     repeatable: Boolean = false,
 ) {
     var pressed by remember { mutableStateOf(false) }
+    // Keyed on pressed/sendKey/repeatable only. (Including onKey here restarted the
+    // repeat coroutine on every recomposition, breaking key-repeat; applying a sticky
+    // modifier across a repeat burst is a deferred minor item.)
     LaunchedEffect(pressed, sendKey, repeatable) {
         if (!repeatable || !pressed) return@LaunchedEffect
         delay(400L)
@@ -728,18 +791,25 @@ private fun X11KeyButton(
 
 /**
  * Compares old vs new IME buffer content, fires synthetic X11 key events
- * for the diff. Printable characters use their ASCII code as the keysym
- * (X11 keysyms 0x20–0x7E match ASCII verbatim).
+ * for the diff. ASCII 0x20-0x7E maps to the same keysym value; non-ASCII
+ * Unicode codepoints map to 0x01000000 | codepoint (X11 protocol extension).
+ * Counts by codepoints (not UTF-16 chars) so surrogate pairs count as one.
  */
 private fun forwardImeDiff(old: String, new: String, vm: X11ViewModel) {
-    if (new.length > old.length) {
-        new.substring(old.length).forEach { ch ->
-            val keysym = ch.code
+    val oldCp = old.codePointCount(0, old.length)
+    val newCp = new.codePointCount(0, new.length)
+    if (newCp > oldCp) {
+        // Iterate added codepoints (not chars) for correct surrogate handling.
+        var i = old.length
+        while (i < new.length) {
+            val cp = new.codePointAt(i)
+            val keysym = if (cp in 0x20..0x7E) cp else 0x01000000 or cp
             vm.sendKey(keysym, down = true)
             vm.sendKey(keysym, down = false)
+            i += Character.charCount(cp)
         }
-    } else if (new.length < old.length) {
-        repeat(old.length - new.length) {
+    } else if (newCp < oldCp) {
+        repeat(oldCp - newCp) {
             vm.sendKey(XK_BackSpace, down = true)
             vm.sendKey(XK_BackSpace, down = false)
         }

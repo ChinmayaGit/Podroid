@@ -57,11 +57,40 @@ object VncClient {
         // 7. Read ServerInit
         val w = din.readUnsignedShort()
         val h = din.readUnsignedShort()
-        din.skipBytes(16) // pixel format we'll override
+        skipFully(din, 16) // pixel format we'll override
         val nameLen = din.readInt()
+        require(nameLen in 0..(1 shl 20)) { "RFB name length $nameLen" }
         val name = ByteArray(nameLen).also { din.readFully(it) }.toString(Charsets.UTF_8)
 
         return VncServerInfo(w, h, name)
+    }
+
+    /**
+     * Reads and discards exactly [n] bytes from [din]. DataInputStream.skipBytes
+     * may skip fewer than requested over a socket when not all bytes have
+     * arrived; a short skip would leave unconsumed bytes and desync RFB framing.
+     * No behavior change when bytes are already buffered.
+     */
+    private fun skipFully(din: DataInputStream, n: Int) {
+        var left = n
+        val scratch = ByteArray(minOf(n, 4096).coerceAtLeast(1))
+        while (left > 0) {
+            val r = din.read(scratch, 0, minOf(left, scratch.size))
+            if (r < 0) throw java.io.IOException("RFB: EOF skipping $n bytes ($left remaining)")
+            left -= r
+        }
+    }
+
+    /**
+     * Validates a server-supplied rect against the framebuffer before any pixel
+     * access. Reachable on a resolution-change race where the server sends a
+     * rect sized to a different desktop than the client's current buffer.
+     * No-op for in-range rects.
+     */
+    private fun requireInBounds(x: Int, y: Int, w: Int, h: Int, stride: Int, size: Int) {
+        val rows = size / stride
+        if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > stride || y + h > rows)
+            throw java.io.IOException("RFB rect out of bounds: x=$x y=$y w=$w h=$h stride=$stride size=$size")
     }
 
     private const val MSG_FRAMEBUFFER_UPDATE: Int = 0
@@ -87,11 +116,12 @@ object VncClient {
         out.write(pf)
 
         // SetEncodings (msg=2): CopyRect, Raw, ExtendedDesktopSize(-308).
-        // ZRLE is intentionally NOT advertised: the decoder desyncs its
-        // continuous zlib stream on complex content (Firefox/xfce send palette/
-        // RLE tiles), producing "invalid distance code" which kills the whole
-        // VNC session. Raw has no zlib state so it can't desync. Re-enable only
-        // after the ZrleDecoder is fixed + verified against real captured tiles.
+        // ZRLE is still NOT advertised, but the historical desync cause is now
+        // fixed: ZrleDecoder fed the inflater in chunks without draining, dropping
+        // all but the last 4 KB of any block >4096 bytes ("invalid distance code").
+        // It now feeds on demand and bounds-checks palette indices and run lengths.
+        // Re-enabling ZRLE changes what the server streams, so it stays gated until
+        // validated on-device against real Firefox/xfce tiles (a separate change).
         val se = java.nio.ByteBuffer.allocate(4 + 3 * 4)
         se.put(2.toByte()); se.put(0.toByte()); se.putShort(3)
         se.putInt(1)      // CopyRect
@@ -131,13 +161,13 @@ object VncClient {
             msgType = din.readUnsignedByte()
             when (msgType) {
                 MSG_FRAMEBUFFER_UPDATE -> break
-                1 -> { din.skipBytes(1); din.readUnsignedShort(); val n = din.readUnsignedShort(); din.skipBytes(n * 6) }
+                1 -> { skipFully(din, 1); din.readUnsignedShort(); val n = din.readUnsignedShort(); skipFully(din, n * 6) }
                 2 -> { }
-                3 -> { din.skipBytes(3); val len = din.readInt(); if (len in 0..(1 shl 20)) din.skipBytes(len) else throw java.io.IOException("ServerCutText absurd length=$len") }
+                3 -> { skipFully(din, 3); val len = din.readInt(); if (len in 0..(1 shl 20)) skipFully(din, len) else throw java.io.IOException("ServerCutText absurd length=$len") }
                 else -> throw java.io.IOException("unexpected RFB server msg type $msgType")
             }
         }
-        din.skipBytes(1)
+        skipFully(din, 1)
         val numRects = din.readUnsignedShort()
         var rowBuf: ByteArray? = null
         var newSize: VncSize? = null
@@ -149,11 +179,12 @@ object VncClient {
             val enc = din.readInt()
             when (enc) {
                 ENC_EXTENDED_DESKTOP_SIZE -> {       // -308: w/h are the new fb dims
-                    val screens = din.readUnsignedByte(); din.skipBytes(3)
-                    din.skipBytes(screens * 16)      // we use a single-screen model; dims come from w/h
+                    val screens = din.readUnsignedByte(); skipFully(din, 3)
+                    skipFully(din, screens * 16)     // we use a single-screen model; dims come from w/h
                     newSize = VncSize(w, h)
                 }
                 ENC_RAW -> {
+                    requireInBounds(x, y, w, h, stride, targetArgb.size)
                     val needed = w * 4
                     val rowPixels = rowBuf?.takeIf { it.size >= needed } ?: ByteArray(needed).also { rowBuf = it }
                     for (row in 0 until h) {
@@ -171,11 +202,14 @@ object VncClient {
                 }
                 ENC_COPY_RECT -> {
                     val srcX = din.readUnsignedShort(); val srcY = din.readUnsignedShort()
+                    requireInBounds(x, y, w, h, stride, targetArgb.size)
+                    requireInBounds(srcX, srcY, w, h, stride, targetArgb.size)
                     if (srcY < y) for (row in h - 1 downTo 0) System.arraycopy(targetArgb, (srcY + row) * stride + srcX, targetArgb, (y + row) * stride + x, w)
                     else for (row in 0 until h) System.arraycopy(targetArgb, (srcY + row) * stride + srcX, targetArgb, (y + row) * stride + x, w)
                     damage.add(VncRect(x, y, w, h))
                 }
                 ENC_ZRLE -> {
+                    requireInBounds(x, y, w, h, stride, targetArgb.size)
                     zrle.decode(din, x, y, w, h, targetArgb, stride)
                     damage.add(VncRect(x, y, w, h))
                 }

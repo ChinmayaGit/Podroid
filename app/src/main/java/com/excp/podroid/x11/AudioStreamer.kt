@@ -37,6 +37,11 @@ class AudioStreamer(private val host: String = "127.0.0.1") {
     }
 
     private var job: Job? = null
+    // Held so stop() can close it: readFully blocks indefinitely when the audio
+    // source is quiet, so cancelling the job alone leaves the socket + thread
+    // leaked on screen exit. Closing the socket unblocks readFully with an
+    // exception, letting the loop observe cancellation and exit.
+    @Volatile private var socket: Socket? = null
 
     fun start(scope: CoroutineScope) {
         if (job?.isActive == true) return
@@ -46,15 +51,18 @@ class AudioStreamer(private val host: String = "127.0.0.1") {
     fun stop() {
         job?.cancel()
         job = null
+        try { socket?.close() } catch (_: Exception) {}
+        socket = null
     }
 
     private suspend fun runLoop() {
-        val track = buildTrack()
+        var track = buildTrack()
         track.play()
         try {
             while (coroutineContext.isActive) {
                 try {
                     Socket().use { s ->
+                        socket = s
                         s.connect(InetSocketAddress(host, X11Constants.AUDIO_PORT), 2000)
                         // Disable Nagle — audio frames are tiny and latency-
                         // sensitive; coalescing them adds jitter that AudioTrack
@@ -67,15 +75,31 @@ class AudioStreamer(private val host: String = "127.0.0.1") {
                             // Throws EOFException on socket close → catch outer
                             // reconnects.
                             din.readFully(buf, 0, BUF_BYTES)
-                            track.write(buf, 0, BUF_BYTES)
+                            // Loop on write: AudioTrack may accept fewer than
+                            // BUF_BYTES per call. A negative return is an
+                            // ERROR_* (e.g. ERROR_DEAD_OBJECT after a route
+                            // change) → rebuild the track and resume.
+                            var off = 0
+                            while (off < BUF_BYTES) {
+                                val n = track.write(buf, off, BUF_BYTES - off)
+                                if (n < 0) {
+                                    Log.v(TAG, "AudioTrack.write error $n; rebuilding")
+                                    track.stop(); track.release()
+                                    track = buildTrack(); track.play()
+                                    break
+                                }
+                                off += n
+                            }
                         }
                     }
                 } catch (e: Exception) {
                     Log.v(TAG, "audio reconnect: ${e.message}")
+                    socket = null
                     delay(1000)
                 }
             }
         } finally {
+            socket = null
             track.stop()
             track.release()
         }

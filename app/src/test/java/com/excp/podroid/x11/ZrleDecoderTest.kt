@@ -46,4 +46,92 @@ class ZrleDecoderTest {
         ZrleDecoder().decode(din, 0, 0, 2, 2, target, 2)
         assertEquals(a, target[0]); assertEquals(b, target[1]); assertEquals(a, target[2]); assertEquals(b, target[3])
     }
+
+    /**
+     * Marquee fix A: a rect whose compressed zlib block exceeds the 4096-byte
+     * inputScratch must decode correctly. High-entropy raw tiles across a wide
+     * rect compress to >4 KB, so the old pre-load loop dropped all but the last
+     * 4 KB chunk and zlib reported "invalid distance code".
+     */
+    @Test fun `wide rect with compressed block over 4KB decodes correctly`() {
+        // 320x64 rect = 5 raw tiles of 64x64. Pseudo-random colors so zlib can't
+        // shrink it below 4096 bytes compressed.
+        val w = 320; val h = 64
+        val src = IntArray(w * h)
+        var seed = 0x12345678
+        for (i in src.indices) {
+            // xorshift PRNG → high-entropy, deterministic
+            seed = seed xor (seed shl 13); seed = seed xor (seed ushr 17); seed = seed xor (seed shl 5)
+            src[i] = (0xFF shl 24) or (seed and 0xFFFFFF)
+        }
+        // Build the ZRLE tile stream: row-major 64x64 raw tiles.
+        val plain = java.io.ByteArrayOutputStream()
+        var ty = 0
+        while (ty < h) {
+            val th = minOf(64, h - ty)
+            var tx = 0
+            while (tx < w) {
+                val tw = minOf(64, w - tx)
+                plain.write(0) // subencoding 0 = raw
+                for (row in 0 until th) for (col in 0 until tw) {
+                    plain.write(cpixel(src[(ty + row) * w + (tx + col)]))
+                }
+                tx += 64
+            }
+            ty += 64
+        }
+        val rect = zrleRect(plain.toByteArray())
+        // Sanity: the compressed block must actually exceed inputScratch (4096).
+        val compLen = java.nio.ByteBuffer.wrap(rect, 0, 4).int
+        org.junit.Assert.assertTrue("compressed block must exceed 4096 (was $compLen)", compLen > 4096)
+
+        val din = DataInputStream(ByteArrayInputStream(rect))
+        val target = IntArray(w * h)
+        ZrleDecoder().decode(din, 0, 0, w, h, target, w)
+        org.junit.Assert.assertArrayEquals(src, target)
+    }
+
+    /** High: a packed-palette tile whose index exceeds the palette size → IOException, not AIOOBE. */
+    @Test(expected = java.io.IOException::class)
+    fun `packed palette index out of range throws IOException`() {
+        // Palette of 2 entries (subenc 2, 1 bit/index). Feed a row byte 0b1000_0000:
+        // first index = 1 (valid). Use a 1-entry palette via subenc would not be 2..16;
+        // instead force overflow with n=2 but a single-color palette is fine — to
+        // overflow we use n that makes idx exceed: build subenc=3 (n=3, 2 bits/idx),
+        // so idx can be 0..3 but palette only has 3 entries; idx=3 overflows.
+        val n = 3
+        val plain = java.io.ByteArrayOutputStream()
+        plain.write(n) // subencoding 3 = packed palette, 3 entries
+        repeat(n) { plain.write(cpixel(0xFF000000.toInt() or it)) }
+        // 1x1 tile: one packed byte. 2 bits/index, top 2 bits = 0b11 = idx 3 (out of range).
+        plain.write(0b1100_0000)
+        val din = DataInputStream(ByteArrayInputStream(zrleRect(plain.toByteArray())))
+        ZrleDecoder().decode(din, 0, 0, 1, 1, IntArray(1), 1)
+    }
+
+    /** High: a plain-RLE run that overruns the tile total → IOException, not AIOOBE. */
+    @Test(expected = java.io.IOException::class)
+    fun `plain RLE run overrun throws IOException`() {
+        // 2x2 tile (total=4). One run of length 5 (> 4) must be rejected.
+        val plain = java.io.ByteArrayOutputStream()
+        plain.write(128) // plain RLE
+        plain.write(cpixel(0xFFAABBCC.toInt()))
+        // run-length encoding: sum-of-bytes + 1 == 5 → sum 4 → single byte 0x04
+        plain.write(0x04)
+        val din = DataInputStream(ByteArrayInputStream(zrleRect(plain.toByteArray())))
+        ZrleDecoder().decode(din, 0, 0, 2, 2, IntArray(4), 2)
+    }
+
+    /** High: a palette-RLE single-pixel index beyond the palette → IOException, not AIOOBE. */
+    @Test(expected = java.io.IOException::class)
+    fun `palette RLE index out of range throws IOException`() {
+        // Palette of 2 entries (subenc 130). A single-pixel index byte 0x05 (bit7=0,
+        // index 5) exceeds the 2-entry palette.
+        val plain = java.io.ByteArrayOutputStream()
+        plain.write(130) // palette RLE, n = 2
+        plain.write(cpixel(0xFF111111.toInt())); plain.write(cpixel(0xFF222222.toInt()))
+        plain.write(0x05) // single pixel, index 5 → out of range
+        val din = DataInputStream(ByteArrayInputStream(zrleRect(plain.toByteArray())))
+        ZrleDecoder().decode(din, 0, 0, 2, 2, IntArray(4), 2)
+    }
 }
