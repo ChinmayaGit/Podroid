@@ -69,7 +69,7 @@ fun HomeScreen(
     val isRunning  = vmState is VmState.Running
     val isStarting = vmState is VmState.Starting
     val uptimeLabel = viewModel.uptimeLabel(uptimeTick)
-    // Bug 6: cache the result of the ConnectivityManager binder call so it doesn't
+    // Cache the result of the ConnectivityManager binder call so it doesn't
     // re-run on every 1 Hz tick or incidental recomposition.
     val phoneIp = remember { viewModel.phoneIp() }
 
@@ -81,7 +81,7 @@ fun HomeScreen(
             text  = { Text("Version ${info.latestVersion} is available. You have ${BuildConfig.VERSION_NAME}.") },
             confirmButton = {
                 TextButton(onClick = {
-                    // Bug 9: guard against ActivityNotFoundException (no browser) or a
+                    // Guard against ActivityNotFoundException (no browser) or a
                     // blank/malformed releaseUrl from the remote JSON source.
                     runCatching {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.releaseUrl)))

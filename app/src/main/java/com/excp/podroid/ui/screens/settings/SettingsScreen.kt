@@ -271,7 +271,7 @@ fun SettingsScreen(
                     onClick = { viewModel.exportConsoleLogs() },
                 )
                 Spacer(Modifier.height(PodroidTokens.Spacing.SM))
-                // Bug 7: use lifecycle-aware collection to match the rest of the screen.
+                // Use lifecycle-aware collection to match the rest of the screen.
                 val avfVerbose by viewModel.avfVerboseLogging.collectAsStateWithLifecycle()
                 PodroidListRow(
                     label = "Verbose AVF logging",
@@ -311,7 +311,7 @@ fun SettingsScreen(
         AddPortForwardDialog(
             onDismiss = { showAddDialog = false },
             onAdd = { hostPort, guestPort, protocol ->
-                // Bug 8: only close the dialog when the rule was actually added.
+                // Only close the dialog when the rule was actually added.
                 // addPortForward returns false if the (hostPort, protocol) pair
                 // already exists; in that case the dialog stays open with an error.
                 val added = viewModel.addPortForward(hostPort, guestPort, protocol)
@@ -610,7 +610,7 @@ private fun AdvancedFieldsBlock(
 @Composable
 private fun AddPortForwardDialog(
     onDismiss: () -> Unit,
-    // Bug 8: returns true if the rule was added, false if it was a duplicate.
+    // Returns true if the rule was added, false if it was a duplicate.
     // The dialog shows an error and stays open on false.
     onAdd: (hostPort: Int, guestPort: Int, protocol: String) -> Boolean,
 ) {

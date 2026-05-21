@@ -191,7 +191,7 @@ class SettingsViewModel @Inject constructor(
 
     // "both" expands into separate TCP + UDP rules. Returns true if at least one
     // rule was added; false if every expansion was already present (duplicate).
-    // Bug 8: the caller uses the return value to show feedback instead of silently
+    // The caller uses the return value to show feedback instead of silently
     // closing the dialog on a duplicate.
     fun addPortForward(hostPort: Int, guestPort: Int, protocol: String = "tcp"): Boolean {
         val protos = if (protocol == "both") listOf("tcp", "udp") else listOf(protocol)

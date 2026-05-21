@@ -86,7 +86,7 @@ fun SetupScreen(
     val pagerState = rememberPagerState(pageCount = { 3 })
     val scope = rememberCoroutineScope()
 
-    // Bug 4: request the notification permission BEFORE navigating away; using
+    // Request the notification permission BEFORE navigating away; using
     // rememberLauncherForActivityResult registers it while the composable is still
     // alive, so the result actually arrives. ActivityCompat.requestPermissions
     // after onSetupComplete() fires against a transitioning Activity and is dropped
@@ -108,7 +108,7 @@ fun SetupScreen(
         }
     }
 
-    // Bug 10: re-sync storageAccessEnabled against the actual OS grant on every
+    // Re-sync storageAccessEnabled against the actual OS grant on every
     // resume (the user may have denied the all-files-access screen we sent them to).
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {

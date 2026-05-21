@@ -17,7 +17,7 @@ import org.junit.Test
 class UpdateRepositoryTest {
 
     // ------------------------------------------------------------------
-    // shouldCheck (Bug 1: cache clock uses currentTimeMillis, not uptimeMillis)
+    // shouldCheck (cache clock uses currentTimeMillis, not uptimeMillis)
     // ------------------------------------------------------------------
 
     @Test
@@ -56,7 +56,7 @@ class UpdateRepositoryTest {
     }
 
     // ------------------------------------------------------------------
-    // isNewer (Bug 6: prerelease suffix numeric comparison)
+    // isNewer (prerelease suffix numeric comparison)
     // ------------------------------------------------------------------
 
     @Test

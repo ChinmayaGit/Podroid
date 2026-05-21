@@ -12,13 +12,13 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Bug 4: PortForwardRule.deserialize must validate protocol and port range.
- * Bug 5: addRule must dedup on (hostPort, protocol) key.
+ * PortForwardRule.deserialize must validate protocol and port range.
+ * addRule must dedup on (hostPort, protocol) key.
  */
 class PortForwardRepositoryTest {
 
     // ------------------------------------------------------------------
-    // Bug 4 — deserialize validation
+    // deserialize validation
     // ------------------------------------------------------------------
 
     @Test
@@ -84,7 +84,7 @@ class PortForwardRepositoryTest {
     }
 
     // ------------------------------------------------------------------
-    // Bug 5 — (hostPort, protocol) dedup helper
+    // (hostPort, protocol) dedup helper
     // ------------------------------------------------------------------
 
     @Test
