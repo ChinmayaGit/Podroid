@@ -150,6 +150,11 @@
             <td>May be a no-op on shipping Pixel AVF builds (requires an AOSP-main SharedPath API not yet in stable releases)</td>
           </tr>
           <tr>
+            <td>USB device passthrough</td>
+            <td>Supported (opt-in; adds a USB controller at boot)</td>
+            <td>Not available - there is no QMP channel to stream device handles to the VM</td>
+          </tr>
+          <tr>
             <td>Verbose logging toggle</td>
             <td>Not applicable</td>
             <td>"Verbose AVF logging" in Settings &rarr; Advanced (useful for bug reports)</td>

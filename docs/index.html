@@ -647,6 +647,14 @@
 
       <div class="feature-card">
         <div class="feature-icon">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="3" r="1.4"/><path d="M12 4.4V21"/><path d="M8.5 10.5 12 7l3.5 3.5"/><rect x="9" y="11" width="6" height="4.5" rx="1"/><path d="M7 16.5h10"/></svg>
+        </div>
+        <h3>USB device passthrough</h3>
+        <p>Plug a real USB device (Wi-Fi adapter, storage, serial adapter, audio interface) into the running VM straight from Android, with no root and no device-filter XML. Flip the opt-in toggle in Settings, attach the device, grant permission once, and it shows up inside the guest. QEMU backend.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
           <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         </div>
         <h3>One-tap Diagnostics</h3>
@@ -966,6 +974,13 @@ qmp.sock               →  runtime port-forward control</div>
         <summary>Can I access my Android files from the VM?</summary>
         <div class="faq-answer">
           Yes. Toggle <strong>Downloads folder sharing</strong> in Settings and the Android Downloads folder is exposed to the VM via <code>virtio-9p</code>, mounted inside the guest at <code>/mnt/downloads</code>. Files you drop in Downloads on the phone show up there immediately, and anything the VM writes to <code>/mnt/downloads</code> appears back in Downloads.
+        </div>
+      </details>
+
+      <details>
+        <summary>Can I plug in a USB device?</summary>
+        <div class="faq-answer">
+          Yes, on the QEMU backend. Enable <strong>USB passthrough</strong> in Settings (it adds a USB controller at boot, so set it while the VM is stopped), then attach a device through a USB-C hub or OTG adapter. Android asks for permission once per device, and it then appears inside the guest while Podroid is running. Works with Wi-Fi adapters, storage, serial adapters, audio interfaces, and more. Not available on the AVF backend, which has no channel to hand the device to the VM.
         </div>
       </details>
 
