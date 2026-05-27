@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,7 +59,9 @@ fun HeadlessOverlay(onExit: () -> Unit) {
             Text(
                 text = stringResource(R.string.server_mode_exit_hint),
                 color = Color(0x33FFFFFF),
-                modifier = Modifier.padding(bottom = 48.dp),
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp),
             )
         }
     }

@@ -290,8 +290,12 @@ class PodroidService : Service() {
         engine.state.collect { state ->
             when (state) {
                 is VmState.Running -> ensureHostBridge().start()
-                is VmState.Stopped, is VmState.Idle, is VmState.Error ->
+                is VmState.Stopped, is VmState.Idle, is VmState.Error -> {
                     hostRequestServer?.stop()
+                    // Drop server mode so the black overlay doesn't linger over a
+                    // stopped/crashed VM with no indication it died.
+                    headlessModeManager.setActive(false)
+                }
                 else -> {}
             }
         }
