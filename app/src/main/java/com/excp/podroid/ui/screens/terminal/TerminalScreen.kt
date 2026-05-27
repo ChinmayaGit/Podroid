@@ -45,6 +45,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Tune
@@ -129,6 +130,7 @@ fun TerminalScreen(
     val showQuickSettings by viewModel.showQuickSettings.collectAsStateWithLifecycle()
     val showExtraKeys by viewModel.showExtraKeysFlow.collectAsStateWithLifecycle()
     val hapticsEnabled by viewModel.hapticsEnabledFlow.collectAsStateWithLifecycle()
+    var showServerSheet by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         val activity = context as? Activity
@@ -202,6 +204,10 @@ fun TerminalScreen(
                 }
             },
             actions = {
+                IconButton(onClick = { showServerSheet = true }) {
+                    Icon(Icons.Default.Bedtime, contentDescription = stringResource(R.string.server_mode))
+                }
+                Spacer(Modifier.width(PodroidTokens.Spacing.XS))
                 IconButton(onClick = onNavigateToX11) {
                     Icon(Icons.Default.DesktopWindows, contentDescription = "X11 screen")
                 }
@@ -211,6 +217,13 @@ fun TerminalScreen(
                 }
             },
         )
+
+        if (showServerSheet) {
+            ServerModeSheet(
+                onDismiss = { showServerSheet = false },
+                onEnable = { viewModel.enableServerMode() },
+            )
+        }
 
         when (vmState) {
             is VmState.Idle, is VmState.Stopped -> {

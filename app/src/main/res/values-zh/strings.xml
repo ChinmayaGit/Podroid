@@ -216,4 +216,8 @@
     <string name="usb_passthrough_settings_description_available">在虚拟机中热插拔外部 USB 设备（Wi-Fi、存储、串口等）。设备连接时会询问许可。启动时添加 USB 控制器，因此需要重启虚拟机以应用更改。</string>
     <string name="usb_passthrough_settings_description_unavailable">%1$s 后端不可用：USB 设备直通需要 QEMU 的 QMP 控制套接字，而 AVF 后端不提供此功能。</string>
     <string name="downloads_sharing_unavailable">此 %1$s 构建不可用 - AVF 要求特权系统应用安装（Google 的终端应用通过这种方式绕过）；第三方 APK 无法跨越 SELinux 域读取 /storage/emulated/Download。</string>
+    <string name="server_mode">服务器模式</string>
+    <string name="server_mode_desc">在屏幕变黑的情况下保持虚拟机运行以省电。应用会保持在前台，因此虚拟机不会被停止。要退出，请在任意位置长按 3 秒。</string>
+    <string name="server_mode_enable">启用服务器模式</string>
+    <string name="server_mode_exit_hint">长按 3 秒退出</string>
 </resources>
