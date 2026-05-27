@@ -8,6 +8,9 @@
  *   podroid-hostd     daemon: relays /run/podroid-host.sock <-> Android.
  *   podroid-notify    CLI: post an Android notification.
  *   podroid-forward   CLI: add/remove/list Android port forwards.
+ *   podroid-open      CLI: open a URL on Android (ACTION_VIEW).
+ *   podroid-power     CLI: stop/restart the VM, or query status.
+ *   podroid-headless  CLI (alias podroid-server): toggle server mode.
  *
  * Daemon transport (one request line -> one response line, serialized):
  *   AVF  (podroid.backend=avf in /proc/cmdline): listen AF_VSOCK :9101, accept
@@ -256,6 +259,41 @@ static int cli_forward(int argc, char **argv) {
     return cli_report(resp, list_decode);
 }
 
+static int cli_open(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: podroid-open <url>\n"); return 2; }
+    char *b64 = b64encode((const unsigned char *)argv[1], strlen(argv[1]));
+    char req[8192];
+    snprintf(req, sizeof(req), "OPEN %s", b64 ? b64 : "");
+    free(b64);
+    char resp[8192];
+    if (cli_roundtrip(req, resp, sizeof(resp)) < 0) {
+        fprintf(stderr, "podroid: host bridge not available\n"); return 1;
+    }
+    return cli_report(resp, 0);
+}
+
+static int cli_power(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: podroid-power <stop|restart|status>\n"); return 2; }
+    char req[64];
+    snprintf(req, sizeof(req), "POWER %s", argv[1]);
+    char resp[256];
+    if (cli_roundtrip(req, resp, sizeof(resp)) < 0) {
+        fprintf(stderr, "podroid: host bridge not available\n"); return 1;
+    }
+    return cli_report(resp, 0);
+}
+
+static int cli_headless(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: podroid-server <on|off|status>\n"); return 2; }
+    char req[64];
+    snprintf(req, sizeof(req), "HEADLESS %s", argv[1]);
+    char resp[256];
+    if (cli_roundtrip(req, resp, sizeof(resp)) < 0) {
+        fprintf(stderr, "podroid: host bridge not available\n"); return 1;
+    }
+    return cli_report(resp, 0);
+}
+
 /* On QEMU the host channel is /dev/hvc2, a virtio-console TTY that defaults to
  * cooked mode with ECHO on. Echo is fatal here: every response the guest reads
  * gets echoed straight back out to Android, which then parses its own "OK ..."
@@ -354,5 +392,8 @@ int main(int argc, char **argv) {
     char *base = basename(argv[0]);
     if (strcmp(base, "podroid-notify") == 0) return cli_notify(argc, argv);
     if (strcmp(base, "podroid-forward") == 0) return cli_forward(argc, argv);
+    if (strcmp(base, "podroid-open") == 0) return cli_open(argc, argv);
+    if (strcmp(base, "podroid-power") == 0) return cli_power(argc, argv);
+    if (strcmp(base, "podroid-headless") == 0 || strcmp(base, "podroid-server") == 0) return cli_headless(argc, argv);
     return daemon_main();
 }

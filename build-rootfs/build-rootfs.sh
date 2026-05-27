@@ -120,6 +120,10 @@ chmod +x "$ROOTFS/usr/local/bin/podroid-vsock-agent" 2>/dev/null || true
 chmod +x "$ROOTFS/usr/local/bin/podroid-hostd" 2>/dev/null || true
 ln -sf podroid-hostd "$ROOTFS/usr/local/bin/podroid-notify"
 ln -sf podroid-hostd "$ROOTFS/usr/local/bin/podroid-forward"
+ln -sf podroid-hostd "$ROOTFS/usr/local/bin/podroid-open"
+ln -sf podroid-hostd "$ROOTFS/usr/local/bin/podroid-power"
+ln -sf podroid-hostd "$ROOTFS/usr/local/bin/podroid-headless"
+ln -sf podroid-hostd "$ROOTFS/usr/local/bin/podroid-server"
 chmod +x "$ROOTFS/usr/local/bin/podroid-"*
 mkdir -p "$ROOTFS/etc/conf.d"
 cp /work/files/etc/conf.d/podroid "$ROOTFS/etc/conf.d/"
