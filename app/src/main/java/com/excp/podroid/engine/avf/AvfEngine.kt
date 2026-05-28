@@ -723,9 +723,16 @@ class AvfEngine @Inject constructor(
         // wire an RTC the way QEMU TCG does, so without this the guest
         // boots at 1970-01-01 and TLS fails on every cert.
         val epoch = System.currentTimeMillis() / 1000
-        val resolvedCmdline = ("console=hvc0 root=/dev/ram0 mitigations=off elevator=mq-deadline " +
-            "podroid.tty=hvc0 podroid.backend=avf podroid.epoch=$epoch " +
-            "podroid.x11.dpi=${config.x11Dpi} " +
+        // earlycon captures kernel output BEFORE hvc0 is up. crosvm folds the
+        // 8250 serial into the same stream getConsoleOutput() reads, so a guest
+        // that reboots in early boot (e.g. the Tensor G3 MATCH_HOST crash, #29)
+        // finally leaves a panic instead of an empty console.log. keep_bootcon
+        // keeps it printing after the real console registers.
+        val earlycon = "earlycon keep_bootcon"
+        val verboseFlags = if (config.verboseLogging) " ignore_loglevel" else ""
+        val resolvedCmdline = ("console=hvc0 $earlycon root=/dev/ram0 mitigations=off " +
+            "elevator=mq-deadline podroid.tty=hvc0 podroid.backend=avf podroid.epoch=$epoch " +
+            "podroid.x11.dpi=${config.x11Dpi}$verboseFlags " +
             config.kernelExtraCmdline).trim()
         AvfReflect.addParams(cb, resolvedCmdline)
         if (config.verboseLogging) {
