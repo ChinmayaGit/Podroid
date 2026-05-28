@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.excp.podroid.BuildConfig
 import com.excp.podroid.R
 import com.excp.podroid.engine.VmState
+import com.excp.podroid.engine.avf.AvfFailureGuidance
 import com.excp.podroid.ui.components.AdaptiveContainer
 import com.excp.podroid.ui.components.PodroidDestructiveButton
 import com.excp.podroid.ui.components.PodroidGhostButton
@@ -67,6 +68,8 @@ fun HomeScreen(
     val meta by viewModel.meta.collectAsStateWithLifecycle()
     val uptimeTick by viewModel.uptimeTicker.collectAsStateWithLifecycle()
     val showAvfHint by viewModel.showAvfHint.collectAsStateWithLifecycle()
+    val avfBootFailure by viewModel.avfBootFailure.collectAsStateWithLifecycle()
+    val avfFailureAdvice by viewModel.avfFailureAdvice.collectAsStateWithLifecycle()
 
     val isRunning  = vmState is VmState.Running
     val isStarting = vmState is VmState.Starting
@@ -135,7 +138,14 @@ fun HomeScreen(
                         if (showAvfHint) {
                             AvfHintBanner(onDismiss = { viewModel.dismissAvfHint() })
                         }
-                        HomeStatusBlock(isStarting, isRunning, vmState, bootStage, meta, uptimeLabel)
+                        HomeStatusBlock(
+                            isStarting, isRunning, vmState, bootStage, meta, uptimeLabel,
+                            avfBootFailure = avfBootFailure,
+                            avfFailureAdvice = avfFailureAdvice,
+                            onUseOneCore = { viewModel.useOneCoreAndRetry() },
+                            onSwitchToQemu = { viewModel.switchToQemuAndRetry() },
+                            onRetry = { viewModel.restartVm() },
+                        )
                         HomeDataSection(isRunning, vmState, meta, phoneIp)
                     }
                     Column(
@@ -234,6 +244,11 @@ private fun HomeStatusBlock(
     bootStage: String,
     meta: HomeMeta,
     uptimeLabel: String?,
+    avfBootFailure: Boolean = false,
+    avfFailureAdvice: AvfFailureGuidance.Advice = AvfFailureGuidance.Advice.SWITCH_TO_QEMU,
+    onUseOneCore: () -> Unit = {},
+    onSwitchToQemu: () -> Unit = {},
+    onRetry: () -> Unit = {},
 ) {
     PodroidSectionLabel(stringResource(R.string.vm_status))
     Text(
@@ -275,6 +290,39 @@ private fun HomeStatusBlock(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.error,
         )
+        if (avfBootFailure) {
+            Spacer(Modifier.height(PodroidTokens.Spacing.MD))
+            Text(
+                text = stringResource(
+                    if (avfFailureAdvice == AvfFailureGuidance.Advice.TRY_ONE_CORE)
+                        R.string.avf_boot_failed_try_one_core
+                    else
+                        R.string.avf_boot_failed_switch_qemu
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(PodroidTokens.Spacing.SM))
+            if (avfFailureAdvice == AvfFailureGuidance.Advice.TRY_ONE_CORE) {
+                PodroidPrimaryButton(
+                    text = stringResource(R.string.avf_action_use_one_core),
+                    onClick = onUseOneCore,
+                )
+                Spacer(Modifier.height(PodroidTokens.Spacing.SM))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(PodroidTokens.Spacing.SM)) {
+                PodroidGhostButton(
+                    text = stringResource(R.string.avf_action_switch_qemu),
+                    onClick = onSwitchToQemu,
+                    modifier = Modifier.weight(1f),
+                )
+                PodroidGhostButton(
+                    text = stringResource(R.string.avf_action_retry),
+                    onClick = onRetry,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
     // Starting state: the meta row already shows the amber dot + boot-stage
     // text, which is the canonical boot indicator. No need for a separate ring.
