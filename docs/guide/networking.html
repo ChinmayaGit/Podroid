@@ -124,7 +124,7 @@ podman run -d -p 8080:80 nginx
 curl http://&lt;phone-ip&gt;:8080</code></pre>
 
       <h2>Talking back to Android from the guest</h2>
-      <p>Two command-line tools ship inside the VM so scripts and shell sessions can reach the Android side directly, without the in-app UI. Both work on the QEMU and AVF backends.</p>
+      <p>Several command-line tools ship inside the VM so scripts and shell sessions can reach the Android side directly, without the in-app UI. They all work on the QEMU and AVF backends.</p>
 
       <h3><code>podroid-forward</code> - manage port forwards from the shell</h3>
       <pre><code><span class="c"># forward phone :8888 -&gt; guest :80</span>
@@ -146,9 +146,32 @@ podroid-notify --title Podroid --priority high "container crashed"
 podroid-notify --id 7 "progress 50%"</code></pre>
       <p>Handy for long builds, downloads, cron jobs and container health alerts. Tapping the notification opens Podroid. Requires the standard Android notification permission, requested at first run.</p>
 
+      <h3><code>podroid-open</code> - open a URL on the phone</h3>
+      <pre><code><span class="c"># open a link in the phone's default browser</span>
+podroid-open https://github.com/ExTV/Podroid</code></pre>
+      <p>Hands the URL to Android's <code>ACTION_VIEW</code> intent, so it opens in whatever app handles it on the phone. Only <code>http</code> and <code>https</code> URLs are accepted.</p>
+
+      <h3><code>podroid-power</code> - control the VM from inside the guest</h3>
+      <pre><code><span class="c"># stop the VM cleanly - the app returns to its stopped state</span>
+podroid-power stop
+<span class="c"># restart the VM</span>
+podroid-power restart
+<span class="c"># print the current VM state, e.g. Running</span>
+podroid-power status</code></pre>
+      <p>A clean lifecycle hook routed through the app, unlike an in-guest <code>poweroff</code> (which the app would treat as an unexpected exit). Useful for scripts that need to cycle the VM, or to shut it down from an SSH session.</p>
+
+      <h3><code>podroid-server</code> - server (headless) mode</h3>
+      <pre><code><span class="c"># turn server mode on - the screen goes black at minimum brightness</span>
+podroid-server on
+<span class="c"># turn it back off</span>
+podroid-server off
+<span class="c"># query state (on | off)</span>
+podroid-server status</code></pre>
+      <p>Server mode keeps the VM running behind a pure-black, minimum-brightness full-screen overlay - for leaving the phone on a headless workload with minimal OLED draw and burn-in. The screen stays on (so the system does not kill the VM) but shows nothing. Exit by <strong>holding the screen for three seconds</strong>, or run <code>podroid-server off</code>. The same toggle lives in the terminal's top bar. <code>podroid-headless</code> is an alias for <code>podroid-server</code>.</p>
+
       <div class="callout note">
         <span class="label">How it works</span>
-        <p>A small guest daemon (<code>podroid-hostd</code>) relays each request to the Android side over the same control transport the app already uses - a virtio-console port on QEMU, vsock on AVF - which then posts the notification or writes the port-forward rule. Any process that can reach the guest socket can use these, so they work from a container too if you bind-mount <code>/run/podroid-host.sock</code> into it.</p>
+        <p>A small guest daemon (<code>podroid-hostd</code>) relays each request to the Android side over the same control transport the app already uses - a virtio-console port on QEMU, vsock on AVF - which then performs the requested action: post a notification, write a port-forward rule, open a URL, or control the VM. Any process that can reach the guest socket can use these, so they work from a container too if you bind-mount <code>/run/podroid-host.sock</code> into it.</p>
       </div>
 
       <h2>LAN reachability</h2>
