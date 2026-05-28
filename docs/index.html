@@ -205,7 +205,7 @@
 
     .features-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      grid-template-columns: repeat(3, 1fr);
       gap: 1px;
       background: var(--border);
       border: 1px solid var(--border);
@@ -247,6 +247,21 @@
       font-size: 0.858rem;
       color: var(--text-dim);
       line-height: 1.65;
+    }
+
+    /* Blank cells that complete the last grid row so trailing cells don't
+       show the container's border colour. Card-coloured, non-interactive. */
+    .feature-card.filler { pointer-events: none; }
+
+    /* 13 cards: 3-col leaves 2 trailing cells, 2-col leaves 1, 1-col leaves 0.
+       Show both fillers at 3-col, one at 2-col, none at 1-col. */
+    @media (max-width: 900px) {
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+      .feature-card.filler-b { display: none; }
+    }
+    @media (max-width: 600px) {
+      .features-grid { grid-template-columns: 1fr; }
+      .feature-card.filler { display: none; }
     }
 
     /* ── COMPARISON ────────────────────────────────────── */
@@ -684,6 +699,9 @@
         <h3>English &amp; 中文</h3>
         <p>Fully localized interface in English and Chinese, switchable in Settings or following your device language.</p>
       </div>
+
+      <div class="feature-card filler filler-a" aria-hidden="true"></div>
+      <div class="feature-card filler filler-b" aria-hidden="true"></div>
 
     </div>
   </div>
