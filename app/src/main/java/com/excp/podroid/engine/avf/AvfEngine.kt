@@ -1013,6 +1013,11 @@ class AvfEngine @Inject constructor(
             }
         }
         AvfReflect.setNetworkSupported(cb, true)
+        // Declaring a (headless, display-less) GPU forces virtmgr onto the full
+        // `crosvm` instead of `crosvm_minimal`, which on Pixel's APEX lacks the
+        // `net` feature and aborts a networked VM at `--net`. See setGpuConfig.
+        val gpuAttached = AvfReflect.setGpuConfig(cb)
+        Log.i(TAG, "avf: headless GPU attached=$gpuAttached (forces net-capable crosvm)")
         val customCfg = AvfReflect.build(cb)
 
         val vb = AvfReflect.newVmConfigBuilder(context)
