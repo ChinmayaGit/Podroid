@@ -1,0 +1,78 @@
+#!/bin/sh
+# Sync CPU worker count from Android load simulator (Downloads/Podroid/load-sim).
+set -eu
+
+PIDFILE=/run/podroid/load-sim.pids
+LEVELFILE=/run/podroid/load-sim.level
+
+signal_file() {
+	if mountpoint -q /mnt/downloads 2>/dev/null; then
+		printf '%s\n' "/mnt/downloads/Podroid/load-sim"
+	else
+		printf '%s\n' ""
+	fi
+}
+
+stop_workers() {
+	if [ -f "$PIDFILE" ]; then
+		while read -r pid; do
+			[ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+		done < "$PIDFILE"
+	fi
+	: > "$PIDFILE"
+	printf '0\n' > "$LEVELFILE"
+}
+
+start_workers() {
+	n="$1"
+	stop_workers
+	[ "$n" -gt 0 ] || return 0
+	mkdir -p /run/podroid
+	i=0
+	while [ "$i" -lt "$n" ]; do
+		( while true; do :; done ) &
+		echo "$!" >> "$PIDFILE"
+		i=$((i + 1))
+	done
+	printf '%s\n' "$n" > "$LEVELFILE"
+}
+
+cmd_sync() {
+	want=0
+	sf="$(signal_file)"
+	if [ -n "$sf" ] && [ -f "$sf" ]; then
+		want="$(cat "$sf" 2>/dev/null | tr -cd '0-9')"
+		[ -n "$want" ] || want=0
+	fi
+	cur=0
+	[ -f "$LEVELFILE" ] && cur="$(cat "$LEVELFILE" 2>/dev/null | tr -cd '0-9')"
+	[ -n "$cur" ] || cur=0
+	if [ "$want" != "$cur" ]; then
+		if [ "$want" -gt 0 ]; then
+			start_workers "$want"
+		else
+			stop_workers
+		fi
+	fi
+}
+
+cmd_start() {
+	n="${1:-2}"
+	start_workers "$n"
+}
+
+cmd_stop() {
+	stop_workers
+}
+
+main() {
+	mkdir -p /run/podroid
+	case "${1:-}" in
+		sync)  cmd_sync ;;
+		start) cmd_start "${2:-2}" ;;
+		stop)  cmd_stop ;;
+		*) echo "usage: podroid-stress {sync|start N|stop}" >&2; return 2 ;;
+	esac
+}
+
+main "$@"

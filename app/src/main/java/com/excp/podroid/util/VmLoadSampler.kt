@@ -46,7 +46,7 @@ class VmLoadSampler(
     }
 
     companion object {
-        const val MAX_SAMPLES = 60
+        const val MAX_SAMPLES = 120
 
         fun readProcessCpuTicks(pid: Int): Long? = try {
             val after = File("/proc/$pid/stat").readText().substringAfter(") ")

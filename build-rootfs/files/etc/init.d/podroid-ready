@@ -24,6 +24,9 @@ start() {
     if [ -x /usr/local/bin/podroid-update-stats ]; then
         /usr/local/bin/podroid-update-stats || true
     fi
+    if [ -x /usr/local/bin/podroid-stress ]; then
+        ( while true; do /usr/local/bin/podroid-stress sync; sleep 1; done ) >/dev/null 2>&1 &
+    fi
     echo "Starting SSH..." > /dev/console
     echo "Almost ready..." > /dev/console
     echo "Ready!" > /dev/console

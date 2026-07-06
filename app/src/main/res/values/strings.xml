@@ -125,6 +125,8 @@
 
     <!-- Status monitor -->
     <string name="status_page_title">Status</string>
+    <string name="status_tab_phone">Phone</string>
+    <string name="status_tab_vm">VM image</string>
     <string name="status_phone_section">Phone</string>
     <string name="status_vm_section">Virtual machine</string>
     <string name="status_load_average">Load average (1 / 5 / 15 min)</string>
@@ -133,7 +135,23 @@
     <string name="status_vm_disk">VM disk image</string>
     <string name="status_unavailable">—</string>
     <string name="status_error">Error</string>
-    <string name="status_refresh_hint">Refreshes every 2 seconds while this screen is open.</string>
+    <string name="status_refresh_hint">Collecting live metrics…</string>
+    <string name="status_live_hint">2 updates per second</string>
+    <string name="status_live_badge">LIVE</string>
+    <string name="status_metric_phone_cpu">CPU (average)</string>
+    <string name="status_metric_phone_ram">Memory (phone)</string>
+    <string name="status_metric_phone_storage">Storage (phone)</string>
+    <string name="status_metric_vm_cpu">CPU (average)</string>
+    <string name="status_metric_vm_memory">Memory (emulator)</string>
+    <string name="status_metric_vm_disk">Disk image (total)</string>
+    <string name="status_metric_vm_disk_activity">Disk activity</string>
+    <string name="status_metric_vm_availability">VM availability</string>
+    <string name="status_metric_cpu_legend">Percentage CPU (Avg)</string>
+    <string name="status_metric_memory_legend">Emulator RSS</string>
+    <string name="status_metric_disk_write_legend">Disk growth (KB / sample)</string>
+    <string name="status_metric_availability_legend">VM availability (Avg)</string>
+    <string name="status_phone_details">Details</string>
+    <string name="status_vm_details">Details</string>
     <string name="status_vm_load_graph_title">VM CPU load</string>
     <string name="status_vm_load_current">Current: %1$d%%</string>
     <string name="status_vm_load_collecting">Collecting samples…</string>
@@ -141,7 +159,20 @@
     <string name="status_vm_load_stopped">VM is not running</string>
     <string name="status_vm_load_avf_only">Load graph is available on the QEMU backend while the VM is running</string>
     <string name="status_vm_load_graph_hint">Tracks the emulator process CPU use on your phone, normalized to the VM\'s allocated cores.</string>
-    <string name="status_vm_load_axis" formatted="false">Last ~2 min · 0% (idle) → 100% (all VM cores busy)</string>
+    <string name="status_vm_load_axis" formatted="false">Last ~1 min · 0% (idle) → 100% (all cores busy)</string>
+    <string name="status_load_sim_section">Load simulator</string>
+    <string name="status_load_sim_action">Simulate load</string>
+    <string name="status_load_sim_stop">Stop load simulation</string>
+    <string name="status_load_sim_description">Generate synthetic CPU, memory, and disk activity to test the live charts. Stops when you leave this screen.</string>
+    <string name="status_load_sim_warning">Active — your phone may warm up and use more battery.</string>
+    <string name="status_load_sim_phone">Stress phone</string>
+    <string name="status_load_sim_vm">Stress VM (guest)</string>
+    <string name="status_load_sim_vm_hint_terminal">Enable Downloads sharing on the QEMU backend for automatic VM stress, or copy the command below and run it in the terminal.</string>
+    <string name="status_load_sim_intensity_low">Low</string>
+    <string name="status_load_sim_intensity_medium">Medium</string>
+    <string name="status_load_sim_intensity_high">High</string>
+    <string name="status_load_sim_copy_command">Copy guest stress command</string>
+    <string name="status_load_sim_copied">Command copied to clipboard</string>
 
     <!-- Container backup -->
     <string name="container_backup_title">Container backup</string>
